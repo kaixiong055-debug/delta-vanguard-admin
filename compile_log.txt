@@ -1,0 +1,465 @@
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Build Order:
+[INFO] 
+[INFO] yudao                                                              [pom]
+[INFO] yudao-framework                                                    [pom]
+[INFO] yudao-common                                                       [jar]
+[INFO] yudao-spring-boot-starter-web                                      [jar]
+[INFO] yudao-spring-boot-starter-security                                 [jar]
+[INFO] yudao-spring-boot-starter-mybatis                                  [jar]
+[INFO] yudao-spring-boot-starter-redis                                    [jar]
+[INFO] yudao-spring-boot-starter-mq                                       [jar]
+[INFO] yudao-spring-boot-starter-job                                      [jar]
+[INFO] yudao-spring-boot-starter-test                                     [jar]
+[INFO] yudao-spring-boot-starter-biz-tenant                               [jar]
+[INFO] yudao-spring-boot-starter-websocket                                [jar]
+[INFO] yudao-spring-boot-starter-monitor                                  [jar]
+[INFO] yudao-spring-boot-starter-biz-ip                                   [jar]
+[INFO] yudao-spring-boot-starter-excel                                    [jar]
+[INFO] yudao-spring-boot-starter-biz-data-permission                      [jar]
+[INFO] yudao-module-infra                                                 [jar]
+[INFO] yudao-module-system                                                [jar]
+[INFO] yudao-module-member                                                [jar]
+[INFO] yudao-module-pay                                                   [jar]
+[INFO] yudao-module-mall                                                  [pom]
+[INFO] yudao-module-product                                               [jar]
+[INFO] yudao-module-trade-api                                             [jar]
+[INFO] yudao-module-promotion                                             [jar]
+[INFO] yudao-module-trade                                                 [jar]
+[INFO] yudao-module-delta                                                 [jar]
+[INFO] 
+[INFO] -----------------------< cn.iocoder.boot:yudao >------------------------
+[INFO] Building yudao 2026.05-jdk8-SNAPSHOT                              [1/26]
+[INFO]   from pom.xml
+[INFO] --------------------------------[ pom ]---------------------------------
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao:pom:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] ------------------< cn.iocoder.boot:yudao-framework >-------------------
+[INFO] Building yudao-framework 2026.05-jdk8-SNAPSHOT                    [2/26]
+[INFO]   from yudao-framework\pom.xml
+[INFO] --------------------------------[ pom ]---------------------------------
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-framework ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-framework:pom:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --------------------< cn.iocoder.boot:yudao-common >--------------------
+[INFO] Building yudao-common 2026.05-jdk8-SNAPSHOT                       [3/26]
+[INFO]   from yudao-framework\yudao-common\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-common ---
+[INFO] skip non existing resourceDirectory D:\delta-vanguard\delta-vanguard-admin\yudao-framework\yudao-common\src\main\resources
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-common ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-common:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-common ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] -----------< cn.iocoder.boot:yudao-spring-boot-starter-web >------------
+[INFO] Building yudao-spring-boot-starter-web 2026.05-jdk8-SNAPSHOT      [4/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-web\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-web ---
+[INFO] Copying 2 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-web ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-web:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-web ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ---------< cn.iocoder.boot:yudao-spring-boot-starter-security >---------
+[INFO] Building yudao-spring-boot-starter-security 2026.05-jdk8-SNAPSHOT [5/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-security\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-security ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-security ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-security:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-security ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ---------< cn.iocoder.boot:yudao-spring-boot-starter-mybatis >----------
+[INFO] Building yudao-spring-boot-starter-mybatis 2026.05-jdk8-SNAPSHOT  [6/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-mybatis\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-mybatis ---
+[INFO] Copying 2 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-mybatis ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-mybatis:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-mybatis ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ----------< cn.iocoder.boot:yudao-spring-boot-starter-redis >-----------
+[INFO] Building yudao-spring-boot-starter-redis 2026.05-jdk8-SNAPSHOT    [7/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-redis\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-redis ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-redis ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-redis:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-redis ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ------------< cn.iocoder.boot:yudao-spring-boot-starter-mq >------------
+[INFO] Building yudao-spring-boot-starter-mq 2026.05-jdk8-SNAPSHOT       [8/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-mq\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[WARNING] 1 problem was encountered while building the effective model for org.javassist:javassist:jar:3.21.0-GA during dependency collection step for project (use -X to see details)
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-mq ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-mq ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-mq:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-mq ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] -----------< cn.iocoder.boot:yudao-spring-boot-starter-job >------------
+[INFO] Building yudao-spring-boot-starter-job 2026.05-jdk8-SNAPSHOT      [9/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-job\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-job ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-job ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-job:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-job ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] -----------< cn.iocoder.boot:yudao-spring-boot-starter-test >-----------
+[INFO] Building yudao-spring-boot-starter-test 2026.05-jdk8-SNAPSHOT    [10/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-test\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-test ---
+[INFO] skip non existing resourceDirectory D:\delta-vanguard\delta-vanguard-admin\yudao-framework\yudao-spring-boot-starter-test\src\main\resources
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-test ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-test:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-test ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --------< cn.iocoder.boot:yudao-spring-boot-starter-biz-tenant >--------
+[INFO] Building yudao-spring-boot-starter-biz-tenant 2026.05-jdk8-SNAPSHOT [11/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-biz-tenant\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-biz-tenant ---
+[INFO] Copying 2 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-biz-tenant ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-biz-tenant:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-biz-tenant ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --------< cn.iocoder.boot:yudao-spring-boot-starter-websocket >---------
+[INFO] Building yudao-spring-boot-starter-websocket 2026.05-jdk8-SNAPSHOT [12/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-websocket\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-websocket ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-websocket ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-websocket:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-websocket ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ---------< cn.iocoder.boot:yudao-spring-boot-starter-monitor >----------
+[INFO] Building yudao-spring-boot-starter-monitor 2026.05-jdk8-SNAPSHOT [13/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-monitor\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-monitor ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-monitor ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-monitor:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-monitor ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ----------< cn.iocoder.boot:yudao-spring-boot-starter-biz-ip >----------
+[INFO] Building yudao-spring-boot-starter-biz-ip 2026.05-jdk8-SNAPSHOT  [14/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-biz-ip\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-biz-ip ---
+[INFO] Copying 2 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-biz-ip ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-biz-ip:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-biz-ip ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ----------< cn.iocoder.boot:yudao-spring-boot-starter-excel >-----------
+[INFO] Building yudao-spring-boot-starter-excel 2026.05-jdk8-SNAPSHOT   [15/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-excel\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-excel ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-excel ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-excel:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-excel ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ---< cn.iocoder.boot:yudao-spring-boot-starter-biz-data-permission >----
+[INFO] Building yudao-spring-boot-starter-biz-data-permission 2026.05-jdk8-SNAPSHOT [16/26]
+[INFO]   from yudao-framework\yudao-spring-boot-starter-biz-data-permission\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-spring-boot-starter-biz-data-permission ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-spring-boot-starter-biz-data-permission ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-spring-boot-starter-biz-data-permission:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-spring-boot-starter-biz-data-permission ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] -----------------< cn.iocoder.boot:yudao-module-infra >-----------------
+[INFO] Building yudao-module-infra 2026.05-jdk8-SNAPSHOT                [17/26]
+[INFO]   from yudao-module-infra\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[WARNING] 1 problem was encountered while building the effective model for org.javassist:javassist:jar:3.20.0-GA during dependency collection step for project (use -X to see details)
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-infra ---
+[INFO] Copying 102 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-infra ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-infra:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-infra ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ----------------< cn.iocoder.boot:yudao-module-system >-----------------
+[INFO] Building yudao-module-system 2026.05-jdk8-SNAPSHOT               [18/26]
+[INFO]   from yudao-module-system\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-system ---
+[INFO] Copying 37 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-system ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-system:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-system ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ----------------< cn.iocoder.boot:yudao-module-member >-----------------
+[INFO] Building yudao-module-member 2026.05-jdk8-SNAPSHOT               [19/26]
+[INFO]   from yudao-module-member\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-member ---
+[INFO] skip non existing resourceDirectory D:\delta-vanguard\delta-vanguard-admin\yudao-module-member\src\main\resources
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-member ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-member:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-member ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ------------------< cn.iocoder.boot:yudao-module-pay >------------------
+[INFO] Building yudao-module-pay 2026.05-jdk8-SNAPSHOT                  [20/26]
+[INFO]   from yudao-module-pay\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-pay ---
+[INFO] skip non existing resourceDirectory D:\delta-vanguard\delta-vanguard-admin\yudao-module-pay\src\main\resources
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-pay ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-pay:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-pay ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] -----------------< cn.iocoder.boot:yudao-module-mall >------------------
+[INFO] Building yudao-module-mall 2026.05-jdk8-SNAPSHOT                 [21/26]
+[INFO]   from yudao-module-mall\pom.xml
+[INFO] --------------------------------[ pom ]---------------------------------
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-mall ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-mall:pom:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] ----------------< cn.iocoder.boot:yudao-module-product >----------------
+[INFO] Building yudao-module-product 2026.05-jdk8-SNAPSHOT              [22/26]
+[INFO]   from yudao-module-mall\yudao-module-product\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-product ---
+[INFO] skip non existing resourceDirectory D:\delta-vanguard\delta-vanguard-admin\yudao-module-mall\yudao-module-product\src\main\resources
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-product ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-product:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-product ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ---------------< cn.iocoder.boot:yudao-module-trade-api >---------------
+[INFO] Building yudao-module-trade-api 2026.05-jdk8-SNAPSHOT            [23/26]
+[INFO]   from yudao-module-mall\yudao-module-trade-api\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-trade-api ---
+[INFO] skip non existing resourceDirectory D:\delta-vanguard\delta-vanguard-admin\yudao-module-mall\yudao-module-trade-api\src\main\resources
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-trade-api ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-trade-api:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-trade-api ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] ---------------< cn.iocoder.boot:yudao-module-promotion >---------------
+[INFO] Building yudao-module-promotion 2026.05-jdk8-SNAPSHOT            [24/26]
+[INFO]   from yudao-module-mall\yudao-module-promotion\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-promotion ---
+[INFO] skip non existing resourceDirectory D:\delta-vanguard\delta-vanguard-admin\yudao-module-mall\yudao-module-promotion\src\main\resources
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-promotion ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-promotion:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-promotion ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] -----------------< cn.iocoder.boot:yudao-module-trade >-----------------
+[INFO] Building yudao-module-trade 2026.05-jdk8-SNAPSHOT                [25/26]
+[INFO]   from yudao-module-mall\yudao-module-trade\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-trade ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-trade ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-trade:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-trade ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] -----------------< cn.iocoder.boot:yudao-module-delta >-----------------
+[INFO] Building yudao-module-delta 2026.05-jdk8-SNAPSHOT                [26/26]
+[INFO]   from yudao-module-delta\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ yudao-module-delta ---
+[INFO] skip non existing resourceDirectory D:\delta-vanguard\delta-vanguard-admin\yudao-module-delta\src\main\resources
+[INFO] 
+[INFO] --- flatten:1.7.2:flatten (flatten) @ yudao-module-delta ---
+[INFO] Generating flattened POM of project cn.iocoder.boot:yudao-module-delta:jar:2026.05-jdk8-SNAPSHOT...
+[INFO] 
+[INFO] --- compiler:3.14.0:compile (default-compile) @ yudao-module-delta ---
+[INFO] Recompiling the module because of changed source code.
+[INFO] Compiling 336 source files with javac [debug target 1.8] to target\classes
+[INFO] -------------------------------------------------------------
+[WARNING] COMPILATION WARNING : 
+[INFO] -------------------------------------------------------------
+[WARNING] 未与 -source 8 一起设置引导类路径
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/finance/DeltaFinanceReconciliationConvert.java:[24,38] Unmapped target property: "statusName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/settlement/DeltaWorkerSettlementConvert.java:[25,36] Unmapped target properties: "serviceOrderNo, settlementStatusName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/settlement/DeltaWorkerSettlementConvert.java:[32,33] Unmapped target properties: "serviceOrderNo, workerName, settlementStatusName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/settlement/DeltaWorkerSettlementConvert.java:[36,39] Unmapped target properties: "serviceOrderNo, workerName, settlementStatusName, logs".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaServiceOrderConvert.java:[35,38] Unmapped target properties: "serviceName, serviceConfigSnapshot".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaServiceOrderConvert.java:[38,29] Unmapped target properties: "memberNickname, memberAvatar".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaServiceOrderConvert.java:[67,29] Unmapped target properties: "serviceTypeName, deviceTypeName, statusName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaServiceOrderConvert.java:[88,37] Unmapped target properties: "serviceTypeName, deviceTypeName, statusName, assignTime".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/worker/DeltaWorkerConvert.java:[32,33] Unmapped target property: "skills".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/worker/DeltaWorkerConvert.java:[35,23] Unmapped target properties: "memberNickname, memberAvatar, skillSummary, skills".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/club/DeltaClubApplicationConvert.java:[26,35] Unmapped target property: "applicationStatusName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/club/DeltaClubApplicationConvert.java:[29,32] Unmapped target properties: "memberNickname, memberAvatar, applicationStatusName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaOrderProgressConvert.java:[24,39] Unmapped target property: "progressTypeName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaOrderProgressConvert.java:[27,40] Unmapped target property: "progressTypeName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/club/DeltaClubConvert.java:[23,21] Unmapped target properties: "businessStatusName, serviceScopes".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaOrderEvidenceConvert.java:[20,39] Unmapped target property: "evidenceTypeName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaOrderEvidenceConvert.java:[23,40] Unmapped target property: "evidenceTypeName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/market/DeltaOrderMarketConvert.java:[26,35] Unmapped target properties: "serviceTypeName, listingStatusName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/market/DeltaOrderMarketConvert.java:[32,31] Unmapped target property: "operationTypeName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/worker/DeltaWorkerApplicationConvert.java:[27,34] Unmapped target properties: "memberNickname, memberAvatar".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaOrderAcceptanceConvert.java:[22,32] Unmapped target properties: "acceptanceResultName, operatorTypeName, operatorName".
+[WARNING] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/convert/order/DeltaOrderReworkConvert.java:[21,28] Unmapped target properties: "operatorTypeName, operatorName".
+[INFO] 23 warnings 
+[INFO] -------------------------------------------------------------
+[INFO] -------------------------------------------------------------
+[ERROR] COMPILATION ERROR : 
+[INFO] -------------------------------------------------------------
+[ERROR] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/dal/mysql/market/DeltaOrderMarketListingMapper.java:[110,66] 找不到符号
+  符号:   类 Set
+  位置: 接口 cn.iocoder.yudao.module.delta.dal.mysql.market.DeltaOrderMarketListingMapper
+[INFO] 1 error
+[INFO] -------------------------------------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Summary for yudao 2026.05-jdk8-SNAPSHOT:
+[INFO] 
+[INFO] yudao .............................................. SUCCESS [  0.327 s]
+[INFO] yudao-framework .................................... SUCCESS [  0.095 s]
+[INFO] yudao-common ....................................... SUCCESS [  0.724 s]
+[INFO] yudao-spring-boot-starter-web ...................... SUCCESS [  0.276 s]
+[INFO] yudao-spring-boot-starter-security ................. SUCCESS [  0.284 s]
+[INFO] yudao-spring-boot-starter-mybatis .................. SUCCESS [  0.762 s]
+[INFO] yudao-spring-boot-starter-redis .................... SUCCESS [  0.215 s]
+[INFO] yudao-spring-boot-starter-mq ....................... SUCCESS [  0.400 s]
+[INFO] yudao-spring-boot-starter-job ...................... SUCCESS [  0.126 s]
+[INFO] yudao-spring-boot-starter-test ..................... SUCCESS [  0.255 s]
+[INFO] yudao-spring-boot-starter-biz-tenant ............... SUCCESS [  0.406 s]
+[INFO] yudao-spring-boot-starter-websocket ................ SUCCESS [  0.391 s]
+[INFO] yudao-spring-boot-starter-monitor .................. SUCCESS [  0.150 s]
+[INFO] yudao-spring-boot-starter-biz-ip ................... SUCCESS [  0.092 s]
+[INFO] yudao-spring-boot-starter-excel .................... SUCCESS [  0.164 s]
+[INFO] yudao-spring-boot-starter-biz-data-permission ...... SUCCESS [  0.212 s]
+[INFO] yudao-module-infra ................................. SUCCESS [  0.551 s]
+[INFO] yudao-module-system ................................ SUCCESS [  0.624 s]
+[INFO] yudao-module-member ................................ SUCCESS [  0.430 s]
+[INFO] yudao-module-pay ................................... SUCCESS [  0.529 s]
+[INFO] yudao-module-mall .................................. SUCCESS [  0.058 s]
+[INFO] yudao-module-product ............................... SUCCESS [  0.436 s]
+[INFO] yudao-module-trade-api ............................. SUCCESS [  0.107 s]
+[INFO] yudao-module-promotion ............................. SUCCESS [  0.524 s]
+[INFO] yudao-module-trade ................................. SUCCESS [  0.560 s]
+[INFO] yudao-module-delta ................................. FAILURE [ 13.625 s]
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  22.792 s
+[INFO] Finished at: 2026-06-30T10:20:23+08:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.14.0:compile (default-compile) on project yudao-module-delta: Compilation failure
+[ERROR] /D:/delta-vanguard/delta-vanguard-admin/yudao-module-delta/src/main/java/cn/iocoder/yudao/module/delta/dal/mysql/market/DeltaOrderMarketListingMapper.java:[110,66] 找不到符号
+[ERROR]   符号:   类 Set
+[ERROR]   位置: 接口 cn.iocoder.yudao.module.delta.dal.mysql.market.DeltaOrderMarketListingMapper
+[ERROR] 
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException
+[ERROR] 
+[ERROR] After correcting the problems, you can resume the build with the command
+[ERROR]   mvn <args> -rf :yudao-module-delta
