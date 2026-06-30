@@ -1,0 +1,28 @@
+package cn.iocoder.yudao.module.delta.controller.admin.finance.vo;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+
+import javax.validation.constraints.NotNull;
+import java.time.LocalDate;
+
+/**
+ * 财务趋势请求 VO
+ */
+@Schema(description = "管理后台 - 财务趋势请求")
+@Data
+public class DeltaFinanceTrendReqVO {
+
+    @Schema(description = "开始日期", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotNull(message = "开始日期不能为空")
+    private LocalDate startDate;
+
+    @Schema(description = "结束日期", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotNull(message = "结束日期不能为空")
+    private LocalDate endDate;
+
+    @Schema(description = "统计粒度：DAY/WEEK/MONTH", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotNull(message = "统计粒度不能为空")
+    private String granularity;
+
+}
