@@ -1,0 +1,6 @@
+interface:
+  display_name: "Delta SQL 测试数据"
+  short_description: "admin_portal 结构索引、流程数据、幂等与回滚"
+  default_prompt: "优先读取 SQL Skill 的结构索引和基础数据摘要，只对目标表做最小实时检查，生成幂等初始化与回滚 SQL。"
+policy:
+  allow_implicit_invocation: true
