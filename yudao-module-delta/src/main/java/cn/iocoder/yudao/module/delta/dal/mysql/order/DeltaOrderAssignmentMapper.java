@@ -26,6 +26,16 @@ public interface DeltaOrderAssignmentMapper extends BaseMapperX<DeltaOrderAssign
                 .eq(DeltaOrderAssignmentDO::getAssignmentStatus, AssignmentStatusEnum.ACCEPTED.getStatus()));
     }
 
+    /** 查询待确认或已接受的有效派单记录。 */
+    default DeltaOrderAssignmentDO selectAnyActiveByServiceOrderId(Long serviceOrderId) {
+        return selectOne(new LambdaQueryWrapper<DeltaOrderAssignmentDO>()
+                .eq(DeltaOrderAssignmentDO::getServiceOrderId, serviceOrderId)
+                .in(DeltaOrderAssignmentDO::getAssignmentStatus,
+                        AssignmentStatusEnum.PENDING.getStatus(),
+                        AssignmentStatusEnum.ACCEPTED.getStatus())
+                .last("LIMIT 1"));
+    }
+
     /**
      * 根据打手ID查询有效分配记录列表（已接受状态）
      */

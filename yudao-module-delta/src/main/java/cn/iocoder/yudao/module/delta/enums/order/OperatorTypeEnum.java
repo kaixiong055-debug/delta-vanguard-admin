@@ -18,7 +18,8 @@ public enum OperatorTypeEnum implements ArrayValuable<Integer> {
     CUSTOMER(1, "客户"),
     WORKER(2, "打手"),
     ADMIN(3, "客服"),
-    SYSTEM(4, "系统");
+    SYSTEM(4, "系统"),
+    CLUB_OWNER(5, "俱乐部负责人");
 
     public static final Integer[] ARRAYS = Arrays.stream(values())
             .map(OperatorTypeEnum::getType).toArray(Integer[]::new);

@@ -18,7 +18,8 @@ public enum AssignmentTypeEnum implements ArrayValuable<Integer> {
     DESIGNATED(1, "客户指定"),
     ADMIN_ASSIGN(2, "客服派单"),
     PUBLIC_CLAIM(3, "大厅抢单"),
-    REASSIGN(4, "改派");
+    REASSIGN(4, "改派"),
+    CLUB_ASSIGN(5, "俱乐部分派");
 
     public static final Integer[] ARRAYS = Arrays.stream(values())
             .map(AssignmentTypeEnum::getType).toArray(Integer[]::new);

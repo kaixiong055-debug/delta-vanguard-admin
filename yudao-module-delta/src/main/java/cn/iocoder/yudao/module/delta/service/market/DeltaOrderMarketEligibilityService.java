@@ -117,7 +117,7 @@ public class DeltaOrderMarketEligibilityService {
         // 5. 最大并发订单数检查
         // 只统计 claimedClubTenantId = 当前俱乐部 且 listingStatus = CLAIMED
         // 且对应服务订单处于真实非终态（排除已完成/已取消/售后/纠纷）
-        long claimedCount = countNonTerminalClaimed(clubTenantId);
+        long claimedCount = countNonTerminalClaimed(clubId, clubTenantId);
         int maxOrders = club.getMaxConcurrentOrders() != null ? club.getMaxConcurrentOrders() : 100;
         if (claimedCount >= maxOrders) {
             throw exception(ORDER_MARKET_CLUB_CAPACITY_FULL);
@@ -129,9 +129,9 @@ public class DeltaOrderMarketEligibilityService {
      * <p>
      * 跨租户逐条查询服务订单状态，筛选出非终态的订单。
      */
-    private long countNonTerminalClaimed(Long clubTenantId) {
+    private long countNonTerminalClaimed(Long clubId, Long clubTenantId) {
         List<DeltaOrderMarketListingDO> claimedListings = deltaOrderMarketListingMapper
-                .selectClaimedByClubTenantId(clubTenantId);
+                .selectClaimedByClub(clubId, clubTenantId);
         if (claimedListings.isEmpty()) {
             return 0L;
         }
@@ -174,7 +174,7 @@ public class DeltaOrderMarketEligibilityService {
         if (club == null || club.getBusinessStatus() == null || club.getBusinessStatus() != 1) {
             throw exception(ORDER_MARKET_CLUB_DISABLED);
         }
-        long claimedCount = countNonTerminalClaimed(clubTenantId);
+        long claimedCount = countNonTerminalClaimed(clubId, clubTenantId);
         int maxOrders = maxConcurrentOrders != null ? maxConcurrentOrders : 100;
         if (claimedCount >= maxOrders) {
             throw exception(ORDER_MARKET_CLUB_CAPACITY_FULL);

@@ -88,6 +88,9 @@ public enum DeltaEventTypeEnum {
     ORDER_MARKET_ASSIGNED("ORDER_MARKET_ASSIGNED", "平台已指定俱乐部接单"),
     ORDER_MARKET_WITHDRAWN("ORDER_MARKET_WITHDRAWN", "挂牌已撤回"),
     ORDER_MARKET_EXPIRED("ORDER_MARKET_EXPIRED", "挂牌已过期"),
+
+    // ========== Phase 11 俱乐部履约 ==========
+    CLUB_ORDER_WORKER_ASSIGNED("CLUB_ORDER_WORKER_ASSIGNED", "俱乐部已指派打手"),
     ;
 
     private final String type;

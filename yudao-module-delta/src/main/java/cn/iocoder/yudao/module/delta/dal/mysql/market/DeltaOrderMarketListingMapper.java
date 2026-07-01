@@ -136,13 +136,16 @@ public interface DeltaOrderMarketListingMapper extends BaseMapperX<DeltaOrderMar
     /**
      * 查询已 CLAIMED 的挂牌（按俱乐部租户ID过滤、分页）
      */
-    default PageResult<DeltaOrderMarketListingDO> selectClaimedPage(Integer pageNo, Integer pageSize, Long claimedClubTenantId) {
+    default PageResult<DeltaOrderMarketListingDO> selectClaimedPage(Integer pageNo, Integer pageSize,
+                                                                     Long claimedClubId,
+                                                                     Long claimedClubTenantId) {
         return selectPage(new cn.iocoder.yudao.framework.common.pojo.PageParam() {
             @Override
             public Integer getPageNo() { return pageNo; }
             @Override
             public Integer getPageSize() { return pageSize; }
         }, new LambdaQueryWrapperX<DeltaOrderMarketListingDO>()
+                .eq(DeltaOrderMarketListingDO::getClaimedClubId, claimedClubId)
                 .eq(DeltaOrderMarketListingDO::getClaimedClubTenantId, claimedClubTenantId)
                 .eq(DeltaOrderMarketListingDO::getListingStatus, 1)
                 .orderByDesc(DeltaOrderMarketListingDO::getId));
@@ -151,8 +154,10 @@ public interface DeltaOrderMarketListingMapper extends BaseMapperX<DeltaOrderMar
     /**
      * 查询某个俱乐部 CLAIMED 的挂牌列表（含 serviceOrderId + sourceTenantId，用于按服务订单终态过滤）
      */
-    default List<DeltaOrderMarketListingDO> selectClaimedByClubTenantId(Long claimedClubTenantId) {
+    default List<DeltaOrderMarketListingDO> selectClaimedByClub(Long claimedClubId,
+                                                                 Long claimedClubTenantId) {
         return selectList(new LambdaQueryWrapperX<DeltaOrderMarketListingDO>()
+                .eq(DeltaOrderMarketListingDO::getClaimedClubId, claimedClubId)
                 .eq(DeltaOrderMarketListingDO::getClaimedClubTenantId, claimedClubTenantId)
                 .eq(DeltaOrderMarketListingDO::getListingStatus, 1)
                 .select(DeltaOrderMarketListingDO::getId, DeltaOrderMarketListingDO::getServiceOrderId,

@@ -98,10 +98,10 @@ class DeltaOrderMarketServiceImplTest extends BaseMockitoUnitTest {
         PageResult<DeltaOrderMarketListingDO> expected =
                 new PageResult<>(Collections.<DeltaOrderMarketListingDO>emptyList(), 0L);
         when(eligibilityService.getAndValidateClubByOwnerMemberId(10L)).thenReturn(createClub());
-        when(listingMapper.selectClaimedPage(1, 20, 400L)).thenReturn(expected);
+        when(listingMapper.selectClaimedPage(1, 20, 300L, 400L)).thenReturn(expected);
 
         assertSame(expected, service.getMyClaimedPageForMember(10L, 1, 20));
-        verify(listingMapper).selectClaimedPage(1, 20, 400L);
+        verify(listingMapper).selectClaimedPage(1, 20, 300L, 400L);
     }
 
     @Test
@@ -124,7 +124,7 @@ class DeltaOrderMarketServiceImplTest extends BaseMockitoUnitTest {
         verify(eligibilityService).recheckClubCapacity(300L, 400L, 5);
         verify(listingMapper).updateClaimCas(eq(100L), eq(0), eq(300L), eq(400L),
                 any(LocalDateTime.class));
-        verify(logMapper).insert(argThat(log -> isSuccessfulClaimLog(log)));
+        verify(logMapper).insert(argThat((DeltaOrderMarketLogDO log) -> isSuccessfulClaimLog(log)));
         verify(eventPublisher).publishToAdmin(argThat(this::isClaimedEvent));
     }
 
@@ -142,7 +142,8 @@ class DeltaOrderMarketServiceImplTest extends BaseMockitoUnitTest {
 
         assertServiceException(() -> service.claimForMember(10L, 100L), ORDER_MARKET_CAS_FAILED);
 
-        verify(logMapper).insert(argThat(log -> Integer.valueOf(0).equals(log.getSuccess())));
+        verify(logMapper).insert(argThat((DeltaOrderMarketLogDO log) ->
+                Integer.valueOf(0).equals(log.getSuccess())));
         verify(eventPublisher, never()).publishToAdmin(any(DeltaEventPublishReq.class));
     }
 

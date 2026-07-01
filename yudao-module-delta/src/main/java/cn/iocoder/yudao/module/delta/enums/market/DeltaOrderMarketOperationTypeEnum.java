@@ -22,7 +22,8 @@ public enum DeltaOrderMarketOperationTypeEnum {
     WITHDRAW("WITHDRAW", "撤回挂牌"),
     EXPIRE("EXPIRE", "过期关闭"),
     CLOSE("CLOSE", "平台关闭"),
-    CLAIM_FAILED("CLAIM_FAILED", "抢单失败");
+    CLAIM_FAILED("CLAIM_FAILED", "抢单失败"),
+    ASSIGN_WORKER("ASSIGN_WORKER", "俱乐部分派打手");
 
     private final String type;
     private final String description;

@@ -6,12 +6,16 @@ import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.delta.controller.admin.serviceorder.vo.DeltaServiceOrderPageReqVO;
 import cn.iocoder.yudao.module.delta.controller.app.serviceorder.vo.AppDeltaServiceOrderPageReqVO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaServiceOrderDO;
+import cn.iocoder.yudao.module.delta.enums.order.ServiceOrderStatusEnum;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
 
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 服务履约订单 Mapper
@@ -111,6 +115,55 @@ public interface DeltaServiceOrderMapper extends BaseMapperX<DeltaServiceOrderDO
                 .eqIfPresent(DeltaServiceOrderDO::getStatus, status)
                 .orderByDesc(DeltaServiceOrderDO::getId);
         return selectPage(pageParam, wrapper);
+    }
+
+    /** 查询所有租户中已有有效履约订单的打手 ID。调用方必须显式忽略租户过滤。 */
+    default Set<Long> selectActiveAssignedWorkerIds() {
+        List<DeltaServiceOrderDO> orders = selectList(new LambdaQueryWrapperX<DeltaServiceOrderDO>()
+                .isNotNull(DeltaServiceOrderDO::getAssignedWorkerId)
+                .in(DeltaServiceOrderDO::getStatus,
+                        ServiceOrderStatusEnum.PENDING_DISPATCH.getStatus(),
+                        ServiceOrderStatusEnum.WAITING_DESIGNATED.getStatus(),
+                        ServiceOrderStatusEnum.POOL_PENDING.getStatus(),
+                        ServiceOrderStatusEnum.ACCEPTED_PENDING_START.getStatus(),
+                        ServiceOrderStatusEnum.IN_PROGRESS.getStatus(),
+                        ServiceOrderStatusEnum.WORKER_SUBMITTED.getStatus(),
+                        ServiceOrderStatusEnum.PENDING_VERIFICATION.getStatus())
+                .select(DeltaServiceOrderDO::getAssignedWorkerId));
+        if (orders.isEmpty()) {
+            return new HashSet<>();
+        }
+        return orders.stream().map(DeltaServiceOrderDO::getAssignedWorkerId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+    }
+
+    /** 跨租户校验指定打手是否已有有效履约订单。调用方必须显式忽略租户过滤。 */
+    default boolean existsActiveByWorkerId(Long workerId) {
+        return selectCount(new LambdaQueryWrapperX<DeltaServiceOrderDO>()
+                .eq(DeltaServiceOrderDO::getAssignedWorkerId, workerId)
+                .in(DeltaServiceOrderDO::getStatus,
+                        ServiceOrderStatusEnum.PENDING_DISPATCH.getStatus(),
+                        ServiceOrderStatusEnum.WAITING_DESIGNATED.getStatus(),
+                        ServiceOrderStatusEnum.POOL_PENDING.getStatus(),
+                        ServiceOrderStatusEnum.ACCEPTED_PENDING_START.getStatus(),
+                        ServiceOrderStatusEnum.IN_PROGRESS.getStatus(),
+                        ServiceOrderStatusEnum.WORKER_SUBMITTED.getStatus(),
+                        ServiceOrderStatusEnum.PENDING_VERIFICATION.getStatus())) > 0;
+    }
+
+    /** 俱乐部分派 CAS：只允许未指派的待派单服务订单。 */
+    default int updateClubAssignCas(Long id, Long workerId, Integer dispatchMode,
+                                    java.time.LocalDateTime acceptedAt) {
+        return update(null, new LambdaUpdateWrapper<DeltaServiceOrderDO>()
+                .eq(DeltaServiceOrderDO::getId, id)
+                .eq(DeltaServiceOrderDO::getStatus,
+                        ServiceOrderStatusEnum.PENDING_DISPATCH.getStatus())
+                .isNull(DeltaServiceOrderDO::getAssignedWorkerId)
+                .set(DeltaServiceOrderDO::getStatus,
+                        ServiceOrderStatusEnum.ACCEPTED_PENDING_START.getStatus())
+                .set(DeltaServiceOrderDO::getAssignedWorkerId, workerId)
+                .set(DeltaServiceOrderDO::getAcceptedAt, acceptedAt)
+                .set(DeltaServiceOrderDO::getDispatchMode, dispatchMode));
     }
 
 }

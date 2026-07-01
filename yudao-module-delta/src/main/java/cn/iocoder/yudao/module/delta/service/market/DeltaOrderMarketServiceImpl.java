@@ -1,7 +1,6 @@
 package cn.iocoder.yudao.module.delta.service.market;
 
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
-import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.delta.controller.admin.market.vo.*;
 import cn.iocoder.yudao.module.delta.dal.dataobject.club.DeltaClubProfileDO;
@@ -375,8 +374,9 @@ public class DeltaOrderMarketServiceImpl implements DeltaOrderMarketService {
 
     @Override
     public PageResult<DeltaOrderMarketListingDO> getMyClaimedPage(Integer pageNo, Integer pageSize) {
-        Long tenantId = TenantContextHolder.getRequiredTenantId();
-        return deltaOrderMarketListingMapper.selectClaimedPage(pageNo, pageSize, tenantId);
+        DeltaClubProfileDO club = eligibilityService.getAndValidateCurrentClub();
+        return deltaOrderMarketListingMapper.selectClaimedPage(
+                pageNo, pageSize, club.getId(), club.getTenantId());
     }
 
     @Override
@@ -385,7 +385,7 @@ public class DeltaOrderMarketServiceImpl implements DeltaOrderMarketService {
         DeltaClubProfileDO club =
                 eligibilityService.getAndValidateClubByOwnerMemberId(memberUserId);
         return deltaOrderMarketListingMapper.selectClaimedPage(
-                pageNo, pageSize, club.getTenantId());
+                pageNo, pageSize, club.getId(), club.getTenantId());
     }
 
     // ========== 日志 ==========

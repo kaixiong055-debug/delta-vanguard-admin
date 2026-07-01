@@ -81,7 +81,7 @@ public class DeltaServiceOrderDO extends TenantBaseDO {
      */
     private Integer serviceAmount;
     /**
-     * 派单方式：1-客户指定 2-客服派单 3-接单大厅
+     * 派单方式：1-客户指定 2-客服派单 3-接单大厅 4-俱乐部分派
      */
     private Integer dispatchMode;
     /**

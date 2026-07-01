@@ -33,7 +33,7 @@ public class DeltaOrderAssignmentDO extends TenantBaseDO {
      */
     private Long workerId;
     /**
-     * 派单类型：1-客户指定 2-客服派单 3-大厅抢单 4-改派
+     * 派单类型：1-客户指定 2-客服派单 3-大厅抢单 4-改派 5-俱乐部分派
      */
     private Integer assignmentType;
     /**
@@ -41,7 +41,7 @@ public class DeltaOrderAssignmentDO extends TenantBaseDO {
      */
     private Integer assignmentStatus;
     /**
-     * 操作人类型：1-客户 2-客服 3-系统
+     * 操作人类型：1-客户 2-打手 3-客服 4-系统 5-俱乐部负责人
      */
     private Integer operatorType;
     /**

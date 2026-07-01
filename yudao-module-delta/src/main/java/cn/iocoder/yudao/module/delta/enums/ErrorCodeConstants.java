@@ -282,4 +282,20 @@ public interface ErrorCodeConstants {
     ErrorCode ORDER_MARKET_CAS_FAILED = new ErrorCode(1_020_026_014, "操作失败，挂牌状态已变化，请刷新后重试");
     ErrorCode ORDER_MARKET_ORDER_ALREADY_ASSIGNED = new ErrorCode(1_020_026_015, "服务订单已分配俱乐部");
 
+    // ========== Phase 11 俱乐部履约 1-020-027-xxx ==========
+    ErrorCode CLUB_ORDER_LISTING_NOT_EXISTS = new ErrorCode(1_020_027_000, "已接挂牌不存在");
+    ErrorCode CLUB_ORDER_NOT_BELONG_TO_CLUB = new ErrorCode(1_020_027_001, "无权访问该俱乐部挂牌");
+    ErrorCode CLUB_ORDER_LISTING_STATUS_INVALID = new ErrorCode(1_020_027_002, "挂牌状态不允许此操作");
+    ErrorCode CLUB_ORDER_SOURCE_TENANT_MISMATCH = new ErrorCode(1_020_027_003, "服务订单归属校验失败");
+    ErrorCode CLUB_ORDER_SERVICE_ORDER_NOT_EXISTS = new ErrorCode(1_020_027_004, "挂牌关联的服务订单不存在");
+    ErrorCode CLUB_ORDER_STATUS_NOT_ASSIGNABLE = new ErrorCode(1_020_027_005, "服务订单当前状态不可分派");
+    ErrorCode CLUB_ORDER_ALREADY_ASSIGNED = new ErrorCode(1_020_027_006, "服务订单已指派打手，请勿重复操作");
+    ErrorCode CLUB_ORDER_WORKER_NOT_EXISTS = new ErrorCode(1_020_027_007, "所选打手不存在");
+    ErrorCode CLUB_ORDER_WORKER_TENANT_MISMATCH = new ErrorCode(1_020_027_008, "所选打手不属于当前俱乐部");
+    ErrorCode CLUB_ORDER_WORKER_NOT_AVAILABLE = new ErrorCode(1_020_027_009, "所选打手当前不可接单");
+    ErrorCode CLUB_ORDER_WORKER_SKILL_NOT_MATCH = new ErrorCode(1_020_027_010, "所选打手技能不匹配");
+    ErrorCode CLUB_ORDER_WORKER_HAS_ACTIVE_ORDER = new ErrorCode(1_020_027_011, "所选打手已有进行中的订单");
+    ErrorCode CLUB_ORDER_ASSIGN_BUSY = new ErrorCode(1_020_027_012, "订单正在分派中，请稍后重试");
+    ErrorCode CLUB_ORDER_ASSIGN_STATUS_CHANGED = new ErrorCode(1_020_027_013, "订单状态已变化，请刷新后重试");
+
 }

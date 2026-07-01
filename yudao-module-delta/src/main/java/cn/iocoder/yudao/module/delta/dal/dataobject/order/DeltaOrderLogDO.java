@@ -27,7 +27,7 @@ public class DeltaOrderLogDO extends TenantBaseDO {
      */
     private Long serviceOrderId;
     /**
-     * 操作人类型：1-客户 2-打手 3-客服 4-系统
+     * 操作人类型：1-客户 2-打手 3-客服 4-系统 5-俱乐部负责人
      */
     private Integer operatorType;
     /**
