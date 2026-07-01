@@ -46,6 +46,18 @@ public class DeltaClubServiceImpl implements DeltaClubService {
     private DeltaEventPublisher deltaEventPublisher;
 
     @Override
+    public DeltaClubProfileDO getClubProfileByOwnerMemberId(Long memberUserId) {
+        return TenantUtils.executeIgnore(() ->
+                deltaClubProfileMapper.selectByOwnerMemberId(memberUserId));
+    }
+
+    @Override
+    public List<DeltaClubServiceScopeDO> getClubServiceScopes(Long clubProfileId) {
+        return TenantUtils.executeIgnore(() ->
+                deltaClubServiceScopeMapper.selectListByClubProfileId(clubProfileId));
+    }
+
+    @Override
     public PageResult<DeltaClubProfileDO> getClubPage(DeltaClubPageReqVO pageReqVO) {
         // 平台管理员查看全部俱乐部时，忽略租户过滤
         return TenantUtils.executeIgnore(() -> deltaClubProfileMapper.selectPage(pageReqVO));

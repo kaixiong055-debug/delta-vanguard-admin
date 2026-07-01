@@ -66,6 +66,18 @@ public interface DeltaOrderMarketService {
      */
     PageResult<DeltaOrderMarketListingDO> getMyClaimedPage(Integer pageNo, Integer pageSize);
 
+    // ========== 会员 App 俱乐部操作 ==========
+
+    PageResult<DeltaOrderMarketListingDO> getAvailablePageForMember(
+            Long memberUserId, Integer pageNo, Integer pageSize);
+
+    DeltaOrderMarketListingDO getAvailableForMember(Long memberUserId, Long listingId);
+
+    void claimForMember(Long memberUserId, Long listingId);
+
+    PageResult<DeltaOrderMarketListingDO> getMyClaimedPageForMember(
+            Long memberUserId, Integer pageNo, Integer pageSize);
+
     // ========== 日志 ==========
 
     /**

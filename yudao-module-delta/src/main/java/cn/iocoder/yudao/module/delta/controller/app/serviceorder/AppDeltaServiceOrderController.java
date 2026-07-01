@@ -27,7 +27,7 @@ import static cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUti
  */
 @Tag(name = "用户 App - 服务履约订单")
 @RestController
-@RequestMapping("/app-api/delta/service-order")
+@RequestMapping("/delta/service-order")
 @Validated
 public class AppDeltaServiceOrderController {
 

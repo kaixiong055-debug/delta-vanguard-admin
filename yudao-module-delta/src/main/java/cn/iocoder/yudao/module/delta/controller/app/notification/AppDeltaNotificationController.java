@@ -24,7 +24,7 @@ import static cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUti
  */
 @Tag(name = "用户 App - 站内通知")
 @RestController
-@RequestMapping("/app-api/delta/notification")
+@RequestMapping("/delta/notification")
 @Validated
 public class AppDeltaNotificationController {
 

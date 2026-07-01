@@ -29,7 +29,7 @@ import static cn.iocoder.yudao.module.delta.enums.ErrorCodeConstants.*;
  */
 @Tag(name = "用户 App - 打手结算")
 @RestController
-@RequestMapping("/app-api/delta/worker-settlement")
+@RequestMapping("/delta/worker-settlement")
 @Validated
 public class AppDeltaWorkerSettlementController {
 

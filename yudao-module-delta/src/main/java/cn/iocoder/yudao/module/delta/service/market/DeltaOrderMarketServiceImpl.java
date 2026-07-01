@@ -252,8 +252,19 @@ public class DeltaOrderMarketServiceImpl implements DeltaOrderMarketService {
     @Override
     public PageResult<DeltaOrderMarketListingDO> getAvailablePage(Integer pageNo, Integer pageSize) {
         DeltaClubProfileDO club = eligibilityService.getAndValidateCurrentClub();
+        return getAvailablePageForClub(club, pageNo, pageSize);
+    }
 
-        // 获取俱乐部启用的服务类型
+    @Override
+    public PageResult<DeltaOrderMarketListingDO> getAvailablePageForMember(
+            Long memberUserId, Integer pageNo, Integer pageSize) {
+        DeltaClubProfileDO club =
+                eligibilityService.getAndValidateClubByOwnerMemberId(memberUserId);
+        return getAvailablePageForClub(club, pageNo, pageSize);
+    }
+
+    private PageResult<DeltaOrderMarketListingDO> getAvailablePageForClub(
+            DeltaClubProfileDO club, Integer pageNo, Integer pageSize) {
         List<DeltaClubServiceScopeDO> scopes = TenantUtils.executeIgnore(() ->
                 deltaClubServiceScopeMapper.selectListByClubProfileId(club.getId()));
         Set<Integer> enabledServiceTypes = scopes.stream()
@@ -273,37 +284,47 @@ public class DeltaOrderMarketServiceImpl implements DeltaOrderMarketService {
 
     @Override
     public DeltaOrderMarketListingDO getAvailable(Long id) {
-        // 先校验俱乐部资格
         DeltaClubProfileDO club = eligibilityService.getAndValidateCurrentClub();
+        return getAvailableForClub(club, id);
+    }
 
-        // 查询挂牌
-        DeltaOrderMarketListingDO listing = deltaOrderMarketListingMapper.selectById(id);
+    @Override
+    public DeltaOrderMarketListingDO getAvailableForMember(Long memberUserId, Long listingId) {
+        DeltaClubProfileDO club =
+                eligibilityService.getAndValidateClubByOwnerMemberId(memberUserId);
+        return getAvailableForClub(club, listingId);
+    }
+
+    private DeltaOrderMarketListingDO getAvailableForClub(DeltaClubProfileDO club, Long listingId) {
+        DeltaOrderMarketListingDO listing = deltaOrderMarketListingMapper.selectById(listingId);
         if (listing == null) {
             throw exception(ORDER_MARKET_LISTING_NOT_EXISTS);
         }
-
-        // 再次校验
         eligibilityService.checkEligibility(listing, club.getId(), club.getTenantId());
-
         return listing;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void claim(Long listingId) {
-        // 1. 获取当前俱乐部
         DeltaClubProfileDO club = eligibilityService.getAndValidateCurrentClub();
+        doClaim(listingId, club);
+    }
 
-        // 2. 初步查询挂牌
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void claimForMember(Long memberUserId, Long listingId) {
+        DeltaClubProfileDO club =
+                eligibilityService.getAndValidateClubByOwnerMemberId(memberUserId);
+        doClaim(listingId, club);
+    }
+
+    private void doClaim(Long listingId, DeltaClubProfileDO club) {
         DeltaOrderMarketListingDO listing = deltaOrderMarketListingMapper.selectById(listingId);
         if (listing == null) {
             throw exception(ORDER_MARKET_LISTING_NOT_EXISTS);
         }
-
-        // 3. 资格校验（包括服务订单状态再次确认）
         eligibilityService.checkEligibility(listing, club.getId(), club.getTenantId());
-
-        // 4. 分布式锁内抢单（与assign共用同一把锁）
         deltaOrderMarketLockRedisDAO.lockAndRun(listingId, () -> {
             // 锁内重新查询
             DeltaOrderMarketListingDO current = deltaOrderMarketListingMapper.selectById(listingId);
@@ -356,6 +377,15 @@ public class DeltaOrderMarketServiceImpl implements DeltaOrderMarketService {
     public PageResult<DeltaOrderMarketListingDO> getMyClaimedPage(Integer pageNo, Integer pageSize) {
         Long tenantId = TenantContextHolder.getRequiredTenantId();
         return deltaOrderMarketListingMapper.selectClaimedPage(pageNo, pageSize, tenantId);
+    }
+
+    @Override
+    public PageResult<DeltaOrderMarketListingDO> getMyClaimedPageForMember(
+            Long memberUserId, Integer pageNo, Integer pageSize) {
+        DeltaClubProfileDO club =
+                eligibilityService.getAndValidateClubByOwnerMemberId(memberUserId);
+        return deltaOrderMarketListingMapper.selectClaimedPage(
+                pageNo, pageSize, club.getTenantId());
     }
 
     // ========== 日志 ==========

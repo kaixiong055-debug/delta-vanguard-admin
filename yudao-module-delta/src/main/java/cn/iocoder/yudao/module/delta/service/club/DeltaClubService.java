@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.delta.service.club;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.module.delta.controller.admin.club.vo.*;
 import cn.iocoder.yudao.module.delta.dal.dataobject.club.DeltaClubProfileDO;
+import cn.iocoder.yudao.module.delta.dal.dataobject.club.DeltaClubServiceScopeDO;
 
 import java.util.List;
 
@@ -12,6 +13,16 @@ import java.util.List;
  * @author Delta-Vanguard
  */
 public interface DeltaClubService {
+
+    /**
+     * 根据会员所有者查询俱乐部档案（跨租户只读）。
+     */
+    DeltaClubProfileDO getClubProfileByOwnerMemberId(Long memberUserId);
+
+    /**
+     * 查询俱乐部服务范围（跨租户只读）。
+     */
+    List<DeltaClubServiceScopeDO> getClubServiceScopes(Long clubProfileId);
 
     /**
      * 分页查询俱乐部列表

@@ -47,6 +47,21 @@ public class DeltaOrderMarketEligibilityService {
     private DeltaOrderMarketListingMapper deltaOrderMarketListingMapper;
 
     /**
+     * 根据可信的当前会员 ID 获取其拥有且启用的俱乐部。
+     */
+    public DeltaClubProfileDO getAndValidateClubByOwnerMemberId(Long memberUserId) {
+        DeltaClubProfileDO club = TenantUtils.executeIgnore(() ->
+                deltaClubProfileMapper.selectByOwnerMemberId(memberUserId));
+        if (club == null) {
+            throw exception(ORDER_MARKET_CLUB_NOT_EXISTS);
+        }
+        if (club.getBusinessStatus() == null || club.getBusinessStatus() != 1) {
+            throw exception(ORDER_MARKET_CLUB_DISABLED);
+        }
+        return club;
+    }
+
+    /**
      * 校验俱乐部是否满足接取指定挂牌的条件（平台 assign 和俱乐部 claim 共用）
      *
      * @param listing   挂牌
