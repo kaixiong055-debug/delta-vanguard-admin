@@ -1,0 +1,72 @@
+name: Delta Java CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'yudao-module-delta/**'
+      - 'yudao-framework/**'
+      - 'yudao-dependencies/**'
+      - 'pom.xml'
+      - 'yudao-module-delta/pom.xml'
+      - 'yudao-framework/**/pom.xml'
+      - 'yudao-dependencies/pom.xml'
+      - '.github/workflows/delta-java-ci.yml'
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'yudao-module-delta/**'
+      - 'yudao-framework/**'
+      - 'yudao-dependencies/**'
+      - 'pom.xml'
+      - 'yudao-module-delta/pom.xml'
+      - 'yudao-framework/**/pom.xml'
+      - 'yudao-dependencies/pom.xml'
+      - '.github/workflows/delta-java-ci.yml'
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delta-java-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  delta-java-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+
+      - name: Show environment
+        run: |
+          java -version
+          mvn -version
+
+      - name: Build Delta dependencies
+        run: mvn -B -ntp -pl yudao-module-delta -am -DskipTests install
+
+      - name: Run Delta tests
+        run: mvn -B -ntp -pl yudao-module-delta test
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: delta-surefire-reports-${{ github.run_number }}
+          path: yudao-module-delta/target/surefire-reports/**
+          if-no-files-found: ignore
