@@ -1,0 +1,30 @@
+﻿Delta Java 后端文档更新包
+==========================
+
+适用仓库：
+kaixiong055-debug/delta-vanguard-admin
+
+核对基线：
+98d312cf95388942f2bc9655bcd8fed5854e33d5
+
+使用方法：
+1. 将压缩包内所有文件和目录解压到项目根目录。
+2. 确认“应用文档更新.bat”和项目的 pom.xml 位于同一层。
+3. 双击“应用文档更新.bat”。
+4. 脚本会：
+   - 覆盖根目录 AGENTS.md；
+   - 覆盖 .agents/skills/delta-java-backend/SKILL.md；
+   - 自动替换接口文档.md 的顶部；
+   - 保留“## 3. 服务订单状态枚举”及后面的所有原内容；
+   - 自动备份原接口文档。
+
+运行后建议执行：
+git diff --check
+git status --short
+git diff --name-only
+
+说明：
+- 不修改 Java 业务代码。
+- 不修改 UniApp 或 Vue3。
+- 不执行 Maven。
+- 不提交 Git。
