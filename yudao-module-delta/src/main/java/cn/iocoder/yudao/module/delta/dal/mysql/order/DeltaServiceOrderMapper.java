@@ -3,13 +3,21 @@ package cn.iocoder.yudao.module.delta.dal.mysql.order;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
+import cn.iocoder.yudao.framework.mybatis.core.util.MyBatisUtils;
 import cn.iocoder.yudao.module.delta.controller.admin.serviceorder.vo.DeltaServiceOrderPageReqVO;
 import cn.iocoder.yudao.module.delta.controller.app.serviceorder.vo.AppDeltaServiceOrderPageReqVO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaServiceOrderDO;
 import cn.iocoder.yudao.module.delta.enums.order.ServiceOrderStatusEnum;
+import cn.iocoder.yudao.module.delta.enums.market.DeltaOrderMarketStatusEnum;
+import cn.iocoder.yudao.module.delta.enums.order.AssignmentStatusEnum;
+import cn.iocoder.yudao.module.delta.enums.order.AssignmentTypeEnum;
+import cn.iocoder.yudao.module.delta.enums.order.DispatchModeEnum;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -24,6 +32,49 @@ import java.util.stream.Collectors;
  */
 @Mapper
 public interface DeltaServiceOrderMapper extends BaseMapperX<DeltaServiceOrderDO> {
+
+    @Select({"<script>",
+            "SELECT so.* FROM delta_service_order so",
+            "WHERE so.deleted = 0 AND so.assigned_worker_id = #{workerId}",
+            "<if test='status != null'> AND so.status = #{status} </if>",
+            "AND (so.tenant_id = #{workerTenantId}",
+            "<if test='clubId != null'>",
+            " OR (so.dispatch_mode = #{clubDispatchMode} AND EXISTS (",
+            "   SELECT 1 FROM delta_order_market_listing listing",
+            "   WHERE listing.deleted = 0 AND listing.listing_status = #{claimedStatus}",
+            "     AND listing.service_order_id = so.id",
+            "     AND listing.source_tenant_id = so.tenant_id",
+            "     AND listing.claimed_club_id = #{clubId}",
+            "     AND listing.claimed_club_tenant_id = #{workerTenantId}",
+            " ) AND EXISTS (",
+            "   SELECT 1 FROM delta_order_assignment assignment",
+            "   WHERE assignment.deleted = 0 AND assignment.tenant_id = so.tenant_id",
+            "     AND assignment.service_order_id = so.id",
+            "     AND assignment.worker_id = #{workerId}",
+            "     AND assignment.assignment_type = #{clubAssignmentType}",
+            "     AND assignment.assignment_status = #{acceptedAssignmentStatus}",
+            " ))",
+            "</if>",
+            ") ORDER BY so.id DESC",
+            "</script>"})
+    IPage<DeltaServiceOrderDO> selectWorkerAccessiblePageSql(
+            IPage<DeltaServiceOrderDO> page, @Param("workerId") Long workerId,
+            @Param("workerTenantId") Long workerTenantId, @Param("clubId") Long clubId,
+            @Param("status") Integer status, @Param("claimedStatus") Integer claimedStatus,
+            @Param("clubDispatchMode") Integer clubDispatchMode,
+            @Param("clubAssignmentType") Integer clubAssignmentType,
+            @Param("acceptedAssignmentStatus") Integer acceptedAssignmentStatus);
+
+    default PageResult<DeltaServiceOrderDO> selectWorkerAccessiblePage(
+            cn.iocoder.yudao.framework.common.pojo.PageParam pageParam, Long workerId,
+            Long workerTenantId, Long clubId, Integer status) {
+        IPage<DeltaServiceOrderDO> page = MyBatisUtils.buildPage(pageParam);
+        selectWorkerAccessiblePageSql(page, workerId, workerTenantId, clubId, status,
+                DeltaOrderMarketStatusEnum.CLAIMED.getStatus(),
+                DispatchModeEnum.CLUB_ASSIGN.getMode(), AssignmentTypeEnum.CLUB_ASSIGN.getType(),
+                AssignmentStatusEnum.ACCEPTED.getStatus());
+        return new PageResult<>(page.getRecords(), page.getTotal());
+    }
 
     default DeltaServiceOrderDO selectByTradeOrderItemId(Long tradeOrderItemId) {
         return selectOne(DeltaServiceOrderDO::getTradeOrderItemId, tradeOrderItemId);
@@ -141,6 +192,21 @@ public interface DeltaServiceOrderMapper extends BaseMapperX<DeltaServiceOrderDO
     default boolean existsActiveByWorkerId(Long workerId) {
         return selectCount(new LambdaQueryWrapperX<DeltaServiceOrderDO>()
                 .eq(DeltaServiceOrderDO::getAssignedWorkerId, workerId)
+                .in(DeltaServiceOrderDO::getStatus,
+                        ServiceOrderStatusEnum.PENDING_DISPATCH.getStatus(),
+                        ServiceOrderStatusEnum.WAITING_DESIGNATED.getStatus(),
+                        ServiceOrderStatusEnum.POOL_PENDING.getStatus(),
+                        ServiceOrderStatusEnum.ACCEPTED_PENDING_START.getStatus(),
+                        ServiceOrderStatusEnum.IN_PROGRESS.getStatus(),
+                        ServiceOrderStatusEnum.WORKER_SUBMITTED.getStatus(),
+                        ServiceOrderStatusEnum.PENDING_VERIFICATION.getStatus())) > 0;
+    }
+
+    /** 跨租户检查打手除指定订单外是否还有有效履约订单。调用方必须显式忽略租户过滤。 */
+    default boolean existsOtherActiveByWorkerId(Long workerId, Long excludedServiceOrderId) {
+        return selectCount(new LambdaQueryWrapperX<DeltaServiceOrderDO>()
+                .eq(DeltaServiceOrderDO::getAssignedWorkerId, workerId)
+                .ne(DeltaServiceOrderDO::getId, excludedServiceOrderId)
                 .in(DeltaServiceOrderDO::getStatus,
                         ServiceOrderStatusEnum.PENDING_DISPATCH.getStatus(),
                         ServiceOrderStatusEnum.WAITING_DESIGNATED.getStatus(),

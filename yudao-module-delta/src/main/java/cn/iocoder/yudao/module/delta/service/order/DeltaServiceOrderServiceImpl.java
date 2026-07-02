@@ -2,8 +2,10 @@ package cn.iocoder.yudao.module.delta.service.order;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.PageParam;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.delta.controller.admin.serviceorder.vo.DeltaServiceOrderPageReqVO;
 import cn.iocoder.yudao.module.delta.controller.app.serviceorder.vo.*;
 import cn.iocoder.yudao.module.delta.controller.app.workerorder.vo.AppDeltaWorkerOrderEvidenceCreateReqVO;
@@ -78,6 +80,8 @@ public class DeltaServiceOrderServiceImpl implements DeltaServiceOrderService {
     private DeltaClaimOrderCoreService deltaClaimOrderCoreService;
     @Resource
     private DeltaWorkerOrderExecutionCoreService deltaWorkerOrderExecutionCoreService;
+    @Resource
+    private DeltaWorkerOrderAccessService deltaWorkerOrderAccessService;
     @Resource
     private DeltaOrderProgressService deltaOrderProgressService;
     @Resource
@@ -486,24 +490,13 @@ public class DeltaServiceOrderServiceImpl implements DeltaServiceOrderService {
     }
 
     @Override
-    public PageResult<DeltaServiceOrderDO> getWorkerOrderPage(Long workerId, Integer status, PageParam pageParam) {
-        DeltaWorkerDO worker = deltaWorkerService.getWorker(workerId);
-        if (worker == null) {
-            throw exception(WORKER_NOT_EXISTS);
-        }
-        return deltaServiceOrderMapper.selectWorkerPage(pageParam, workerId, status);
+    public PageResult<DeltaServiceOrderDO> getWorkerOrderPage(Long loginUserId, Integer status, PageParam pageParam) {
+        return deltaWorkerOrderAccessService.getAccessiblePage(loginUserId, status, pageParam);
     }
 
     @Override
-    public DeltaServiceOrderDO getWorkerOrderDetail(Long id, Long workerId) {
-        DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(id);
-        if (order == null) {
-            throw exception(SERVICE_ORDER_NOT_EXISTS);
-        }
-        if (!Objects.equals(order.getAssignedWorkerId(), workerId)) {
-            throw exception(SERVICE_ORDER_NOT_BELONG_TO_WORKER);
-        }
-        return order;
+    public DeltaServiceOrderDO getWorkerOrderDetail(Long id, Long loginUserId) {
+        return deltaWorkerOrderAccessService.resolve(loginUserId, id).getOrder();
     }
 
     // ====== 内部辅助校验 ======
@@ -565,227 +558,84 @@ public class DeltaServiceOrderServiceImpl implements DeltaServiceOrderService {
 
     @Override
     public void startService(Long loginUserId, Long serviceOrderId) {
-        // 1. 获取打手身份
-        DeltaWorkerDO worker = deltaWorkerService.getWorkerByUserId(loginUserId);
-        if (worker == null) {
-            throw exception(ASSIGNMENT_NO_WORKER_IDENTITY);
-        }
-        validateWorkerForServiceExecution(worker);
-
-        // 2. 使用 Redisson 锁 + 独立事务 Bean
-        Long tenantId = worker.getTenantId();
-        deltaServiceOrderLockRedisDAO.lockAndRun(tenantId, serviceOrderId, () -> {
-            deltaWorkerOrderExecutionCoreService.doStartService(worker, serviceOrderId);
-            return null;
-        });
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.resolve(loginUserId, serviceOrderId);
+        runWorkerExecutionLocked(context, () ->
+                deltaWorkerOrderExecutionCoreService.doStartService(context));
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public DeltaOrderProgressDO createProgress(Long loginUserId, AppDeltaWorkerOrderProgressCreateReqVO reqVO) {
-        // 1. 获取打手身份
-        DeltaWorkerDO worker = deltaWorkerService.getWorkerByUserId(loginUserId);
-        if (worker == null) {
-            throw exception(ASSIGNMENT_NO_WORKER_IDENTITY);
-        }
-
-        // 2. 校验服务单
-        DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(reqVO.getServiceOrderId());
-        if (order == null) {
-            throw exception(SERVICE_ORDER_NOT_EXISTS);
-        }
-        if (!worker.getId().equals(order.getAssignedWorkerId())) {
-            throw exception(SERVICE_ORDER_NOT_BELONG_TO_WORKER);
-        }
-        if (!ServiceOrderStatusEnum.IN_PROGRESS.getStatus().equals(order.getStatus())) {
-            throw exception(SERVICE_ORDER_STATUS_CANNOT_PROGRESS);
-        }
-
-        // 3. 校验进度类型（不允许伪造系统关键类型）
-        if (ProgressTypeEnum.START_SERVICE.getType().equals(reqVO.getProgressType())
-                || ProgressTypeEnum.SUBMIT_COMPLETION.getType().equals(reqVO.getProgressType())) {
-            throw exception(PROGRESS_TYPE_FORBIDDEN);
-        }
-
-        // 4. 校验内容
-        if (reqVO.getContent() == null || reqVO.getContent().trim().isEmpty()) {
-            throw exception(PROGRESS_CONTENT_EMPTY);
-        }
-
-        // 5. 校验百分比
-        Integer percent = reqVO.getProgressPercent();
-        if (percent != null && (percent < 0 || percent > 100)) {
-            throw exception(PROGRESS_PERCENT_INVALID);
-        }
-
-        // 6. 创建进度
-        DeltaOrderProgressDO progress = DeltaOrderProgressDO.builder()
-                .serviceOrderId(reqVO.getServiceOrderId())
-                .workerId(worker.getId())
-                .progressType(reqVO.getProgressType())
-                .progressPercent(percent)
-                .content(reqVO.getContent())
-                .build();
-        deltaOrderProgressService.createProgress(progress);
-        log.info("提交服务进度 serviceOrderId={}, workerId={}, progressType={}", reqVO.getServiceOrderId(), worker.getId(), reqVO.getProgressType());
-        return progress;
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.resolve(
+                loginUserId, reqVO.getServiceOrderId());
+        return TenantUtils.execute(context.getSourceTenantId(), () ->
+                deltaWorkerOrderExecutionCoreService.doCreateProgress(context, reqVO));
     }
 
     @Override
     public List<DeltaOrderProgressDO> getWorkerProgressList(Long loginUserId, Long serviceOrderId) {
-        DeltaWorkerDO worker = deltaWorkerService.getWorkerByUserId(loginUserId);
-        if (worker == null) {
-            throw exception(ASSIGNMENT_NO_WORKER_IDENTITY);
-        }
-        DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(serviceOrderId);
-        if (order == null) {
-            throw exception(SERVICE_ORDER_NOT_EXISTS);
-        }
-        if (!worker.getId().equals(order.getAssignedWorkerId())) {
-            throw exception(SERVICE_ORDER_NOT_BELONG_TO_WORKER);
-        }
-        return deltaOrderProgressService.getProgressListByServiceOrderId(serviceOrderId);
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.resolve(loginUserId, serviceOrderId);
+        return TenantUtils.execute(context.getSourceTenantId(), () ->
+                deltaOrderProgressService.getProgressListByServiceOrderId(serviceOrderId));
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public DeltaOrderEvidenceDO createEvidence(Long loginUserId, AppDeltaWorkerOrderEvidenceCreateReqVO reqVO) {
-        // 1. 获取打手身份
-        DeltaWorkerDO worker = deltaWorkerService.getWorkerByUserId(loginUserId);
-        if (worker == null) {
-            throw exception(ASSIGNMENT_NO_WORKER_IDENTITY);
-        }
-
-        // 2. 校验服务单
-        DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(reqVO.getServiceOrderId());
-        if (order == null) {
-            throw exception(SERVICE_ORDER_NOT_EXISTS);
-        }
-        if (!worker.getId().equals(order.getAssignedWorkerId())) {
-            throw exception(SERVICE_ORDER_NOT_BELONG_TO_WORKER);
-        }
-        if (!ServiceOrderStatusEnum.IN_PROGRESS.getStatus().equals(order.getStatus())) {
-            throw exception(SERVICE_ORDER_STATUS_CANNOT_EVIDENCE);
-        }
-
-        // 3. 校验凭证类型合法
-        boolean validType = false;
-        for (EvidenceTypeEnum e : EvidenceTypeEnum.values()) {
-            if (e.getType().equals(reqVO.getEvidenceType())) {
-                validType = true;
-                break;
-            }
-        }
-        if (!validType) {
-            throw exception(SERVICE_ORDER_STATUS_CANNOT_EVIDENCE);
-        }
-
-        // 4. 校验文件URL（HTTPS或项目支持的文件URL）
-        if (reqVO.getFileUrl() == null || reqVO.getFileUrl().trim().isEmpty()) {
-            throw exception(EVIDENCE_URL_EMPTY);
-        }
-
-        // 5. 校验数量上限
-        long count = deltaOrderEvidenceService.countEvidenceByServiceOrderId(reqVO.getServiceOrderId());
-        if (count >= DeltaWorkerOrderExecutionCoreService.MAX_EVIDENCE_PER_ORDER) {
-            throw exception(EVIDENCE_COUNT_EXCEED);
-        }
-
-        // 6. 构建凭证（映射到现有字段结构）
-        DeltaOrderEvidenceDO evidence = DeltaOrderEvidenceDO.builder()
-                .serviceOrderId(reqVO.getServiceOrderId())
-                .workerId(worker.getId())
-                .evidenceType(reqVO.getEvidenceType())
-                .content(reqVO.getDescription())
-                .imageUrls(Collections.singletonList(reqVO.getFileUrl()))
-                .build();
-        deltaOrderEvidenceService.createEvidence(evidence);
-
-        log.info("登记服务凭证 serviceOrderId={}, workerId={}, evidenceType={}", reqVO.getServiceOrderId(), worker.getId(), reqVO.getEvidenceType());
-        return evidence;
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.resolve(
+                loginUserId, reqVO.getServiceOrderId());
+        return TenantUtils.execute(context.getSourceTenantId(), () ->
+                deltaWorkerOrderExecutionCoreService.doCreateEvidence(context, reqVO));
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public void deleteEvidence(Long loginUserId, Long evidenceId) {
-        // 1. 获取打手身份
-        DeltaWorkerDO worker = deltaWorkerService.getWorkerByUserId(loginUserId);
-        if (worker == null) {
-            throw exception(ASSIGNMENT_NO_WORKER_IDENTITY);
-        }
-
-        // 2. 查凭证
-        DeltaOrderEvidenceDO evidence = deltaOrderEvidenceService.getEvidence(evidenceId);
+        DeltaOrderEvidenceDO evidence = TenantUtils.executeIgnore(
+                () -> deltaOrderEvidenceService.getEvidence(evidenceId));
         if (evidence == null) {
             throw exception(EVIDENCE_NOT_EXISTS_P5);
         }
-        if (!worker.getId().equals(evidence.getWorkerId())) {
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.resolve(
+                loginUserId, evidence.getServiceOrderId());
+        if (!Objects.equals(evidence.getTenantId(), context.getSourceTenantId())
+                || !Objects.equals(evidence.getServiceOrderId(), context.getOrder().getId())) {
+            throw exception(WORKER_ORDER_EVIDENCE_TENANT_MISMATCH);
+        }
+        if (!Objects.equals(evidence.getWorkerId(), context.getWorker().getId())) {
             throw exception(EVIDENCE_NOT_BELONG_TO_WORKER);
         }
-
-        // 3. 校验服务单状态（已提交完成不能删除）
-        DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(evidence.getServiceOrderId());
-        if (order == null) {
-            throw exception(SERVICE_ORDER_NOT_EXISTS);
-        }
-        if (!ServiceOrderStatusEnum.IN_PROGRESS.getStatus().equals(order.getStatus())) {
-            throw exception(EVIDENCE_CANNOT_OPERATE_AFTER_COMPLETE);
-        }
-
-        // 4. 逻辑删除
-        deltaOrderEvidenceService.deleteEvidence(evidenceId);
-
-        // 5. 写删除日志
-        DeltaOrderLogDO logEntry = DeltaOrderLogDO.builder()
-                .serviceOrderId(order.getId())
-                .operatorType(OperatorTypeEnum.WORKER.getType())
-                .operatorId(worker.getId())
-                .operation("删除凭证")
-                .beforeStatus(order.getStatus())
-                .afterStatus(order.getStatus())
-                .content("打手ID=" + worker.getId() + " 删除凭证ID=" + evidenceId)
-                .build();
-        deltaOrderLogService.createOrderLog(logEntry);
-
-        log.info("删除服务凭证 evidenceId={}, workerId={}", evidenceId, worker.getId());
+        TenantUtils.execute(context.getSourceTenantId(), () ->
+                deltaWorkerOrderExecutionCoreService.doDeleteEvidence(context, evidenceId));
     }
 
     @Override
     public List<DeltaOrderEvidenceDO> getWorkerEvidenceList(Long loginUserId, Long serviceOrderId) {
-        DeltaWorkerDO worker = deltaWorkerService.getWorkerByUserId(loginUserId);
-        if (worker == null) {
-            throw exception(ASSIGNMENT_NO_WORKER_IDENTITY);
-        }
-        DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(serviceOrderId);
-        if (order == null) {
-            throw exception(SERVICE_ORDER_NOT_EXISTS);
-        }
-        if (!worker.getId().equals(order.getAssignedWorkerId())) {
-            throw exception(SERVICE_ORDER_NOT_BELONG_TO_WORKER);
-        }
-        return deltaOrderEvidenceService.getEvidenceListByServiceOrderId(serviceOrderId);
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.resolve(loginUserId, serviceOrderId);
+        return TenantUtils.execute(context.getSourceTenantId(), () ->
+                deltaOrderEvidenceService.getEvidenceListByServiceOrderId(serviceOrderId));
     }
 
     @Override
     public void submitCompletion(Long loginUserId, Long serviceOrderId, String summary) {
-        // 1. 获取打手身份
-        DeltaWorkerDO worker = deltaWorkerService.getWorkerByUserId(loginUserId);
-        if (worker == null) {
-            throw exception(ASSIGNMENT_NO_WORKER_IDENTITY);
-        }
-        validateWorkerForServiceExecution(worker);
-
-        // 2. 校验总结
         if (summary == null || summary.trim().isEmpty()) {
             throw exception(COMPLETION_SUMMARY_EMPTY);
         }
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.resolve(loginUserId, serviceOrderId);
+        runWorkerExecutionLocked(context, () ->
+                deltaWorkerOrderExecutionCoreService.doSubmitCompletion(context, summary));
+    }
 
-        // 3. 使用 Redisson 锁 + 独立事务 Bean
-        Long tenantId = worker.getTenantId();
-        deltaServiceOrderLockRedisDAO.lockAndRun(tenantId, serviceOrderId, () -> {
-            deltaWorkerOrderExecutionCoreService.doSubmitCompletion(worker, serviceOrderId, summary);
-            return null;
-        });
+    private void runWorkerExecutionLocked(DeltaWorkerOrderAccessContext context, Runnable action) {
+        try {
+            deltaServiceOrderLockRedisDAO.lockAndRun(
+                    context.getSourceTenantId(), context.getOrder().getId(), () -> {
+                        TenantUtils.execute(context.getSourceTenantId(), action);
+                        return null;
+                    });
+        } catch (ServiceException ex) {
+            if (Objects.equals(ex.getCode(), ASSIGNMENT_ORDER_BEING_PROCESSED.getCode())) {
+                throw exception(WORKER_ORDER_EXECUTION_BUSY);
+            }
+            throw ex;
+        }
     }
 
     // ====== Phase 5 老板查询 ======
@@ -858,18 +708,6 @@ public class DeltaServiceOrderServiceImpl implements DeltaServiceOrderService {
     }
 
     // ====== Phase 5 内部辅助 ======
-
-    private void validateWorkerForServiceExecution(DeltaWorkerDO worker) {
-        if (worker == null) {
-            throw exception(ASSIGNMENT_WORKER_NOT_AVAILABLE);
-        }
-        if (!WorkerAuditStatusEnum.isApproved(worker.getAuditStatus())) {
-            throw exception(WORKER_NOT_APPROVED);
-        }
-        if (!CommonStatusEnum.isEnable(worker.getStatus())) {
-            throw exception(WORKER_DISABLED);
-        }
-    }
 
     /**
      * 构建履约时间线（批量聚合，无 N+1）

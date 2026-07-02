@@ -298,4 +298,12 @@ public interface ErrorCodeConstants {
     ErrorCode CLUB_ORDER_ASSIGN_BUSY = new ErrorCode(1_020_027_012, "订单正在分派中，请稍后重试");
     ErrorCode CLUB_ORDER_ASSIGN_STATUS_CHANGED = new ErrorCode(1_020_027_013, "订单状态已变化，请刷新后重试");
 
+    // ========== Phase 12 打手跨租户履约 1-020-028-xxx ==========
+    ErrorCode WORKER_ORDER_CROSS_TENANT_CONTEXT_NOT_FOUND = new ErrorCode(1_020_028_000, "未找到可信的跨租户履约上下文");
+    ErrorCode WORKER_ORDER_CLUB_MISMATCH = new ErrorCode(1_020_028_001, "挂牌俱乐部归属校验失败");
+    ErrorCode WORKER_ORDER_ASSIGNMENT_MISMATCH = new ErrorCode(1_020_028_002, "俱乐部派单记录校验失败");
+    ErrorCode WORKER_ORDER_EVIDENCE_TENANT_MISMATCH = new ErrorCode(1_020_028_003, "凭证归属租户校验失败");
+    ErrorCode WORKER_ORDER_EXECUTION_BUSY = new ErrorCode(1_020_028_004, "订单履约操作正在处理中，请稍后重试");
+    ErrorCode WORKER_ORDER_WORKER_STATUS_CHANGED = new ErrorCode(1_020_028_005, "打手工作状态已变化，请刷新后重试");
+
 }

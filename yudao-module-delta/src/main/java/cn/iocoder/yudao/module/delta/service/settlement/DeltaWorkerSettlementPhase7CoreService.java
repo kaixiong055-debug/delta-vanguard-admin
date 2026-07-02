@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.delta.service.settlement;
 
+import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaServiceOrderDO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.settlement.DeltaWorkerSettlementDO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.settlement.DeltaWorkerSettlementLogDO;
@@ -7,9 +8,12 @@ import cn.iocoder.yudao.module.delta.dal.dataobject.worker.DeltaWorkerDO;
 import cn.iocoder.yudao.module.delta.dal.mysql.order.DeltaServiceOrderMapper;
 import cn.iocoder.yudao.module.delta.dal.redis.no.DeltaNoRedisDAO;
 import cn.iocoder.yudao.module.delta.enums.order.OperatorTypeEnum;
+import cn.iocoder.yudao.module.delta.enums.order.DispatchModeEnum;
 import cn.iocoder.yudao.module.delta.enums.settlement.SettlementOperationTypeEnum;
 import cn.iocoder.yudao.module.delta.enums.settlement.SettlementStatusEnum;
 import cn.iocoder.yudao.module.delta.service.worker.DeltaWorkerService;
+import cn.iocoder.yudao.module.delta.service.order.DeltaClubOrderTenantContext;
+import cn.iocoder.yudao.module.delta.service.order.DeltaClubOrderTenantResolver;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -46,6 +50,8 @@ public class DeltaWorkerSettlementPhase7CoreService {
     private DeltaNoRedisDAO deltaNoRedisDAO;
     @Resource
     private cn.iocoder.yudao.module.delta.service.event.DeltaEventPublisher deltaEventPublisher;
+    @Resource
+    private DeltaClubOrderTenantResolver deltaClubOrderTenantResolver;
 
     // ========== 生成结算（验收时调用） ==========
 
@@ -332,8 +338,8 @@ public class DeltaWorkerSettlementPhase7CoreService {
         // 抽成比例：优先从服务单快照读取
         Integer commissionRate = order.getCommissionRate();
         if (commissionRate == null || commissionRate <= 0) {
-            // 回退到打手表
-            DeltaWorkerDO worker = deltaWorkerService.getWorker(workerId);
+            // 回退到打手表；俱乐部分派订单的打手位于俱乐部租户
+            DeltaWorkerDO worker = resolveWorkerTarget(order).worker;
             if (worker != null && worker.getCommissionRate() != null && worker.getCommissionRate() > 0) {
                 commissionRate = worker.getCommissionRate();
             }
@@ -422,22 +428,25 @@ public class DeltaWorkerSettlementPhase7CoreService {
                                          cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum template) {
         try {
             DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(settlement.getServiceOrderId());
-            Long workerUserId = getWorkerUserId(settlement.getWorkerId());
-            if (workerUserId == null || order == null) return;
+            if (order == null) return;
+            WorkerTarget workerTarget = resolveWorkerTarget(order);
+            Long workerUserId = workerTarget.worker.getUserId();
+            if (workerUserId == null) return;
             java.util.Map<String, String> params = new java.util.HashMap<>();
             params.put("settlementNo", settlement.getSettlementNo());
             params.put("orderNo", order.getServiceOrderNo());
             params.put("amount", String.valueOf(settlement.getWorkerAmount()));
-            deltaEventPublisher.publishToWorker(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
-                    .eventType(eventType.getType())
-                    .tenantId(settlement.getTenantId())
-                    .aggregateType("SETTLEMENT")
-                    .aggregateId(settlement.getId())
-                    .bizKey(eventType.getType() + ":" + settlement.getId() + ":" + workerUserId)
-                    .recipientId(workerUserId)
-                    .templateCode(template.getCode())
-                    .templateParams(params)
-                    .build());
+            TenantUtils.execute(workerTarget.tenantId, () -> deltaEventPublisher.publishToWorker(
+                    cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
+                            .eventType(eventType.getType())
+                            .tenantId(workerTarget.tenantId)
+                            .aggregateType("SETTLEMENT")
+                            .aggregateId(settlement.getId())
+                            .bizKey(eventType.getType() + ":" + settlement.getId() + ":" + workerUserId)
+                            .recipientId(workerUserId)
+                            .templateCode(template.getCode())
+                            .templateParams(params)
+                            .build()));
         } catch (Exception e) {
             log.error("结算事件写入Outbox失败 settlementId={}, eventType={}", settlement.getId(), eventType, e);
         }
@@ -449,22 +458,25 @@ public class DeltaWorkerSettlementPhase7CoreService {
                                                    String reason) {
         try {
             DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(settlement.getServiceOrderId());
-            Long workerUserId = getWorkerUserId(settlement.getWorkerId());
-            if (workerUserId == null || order == null) return;
+            if (order == null) return;
+            WorkerTarget workerTarget = resolveWorkerTarget(order);
+            Long workerUserId = workerTarget.worker.getUserId();
+            if (workerUserId == null) return;
             java.util.Map<String, String> params = new java.util.HashMap<>();
             params.put("settlementNo", settlement.getSettlementNo());
             params.put("orderNo", order.getServiceOrderNo());
             params.put("reason", reason != null ? reason : "");
-            deltaEventPublisher.publishToWorker(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
-                    .eventType(eventType.getType())
-                    .tenantId(settlement.getTenantId())
-                    .aggregateType("SETTLEMENT")
-                    .aggregateId(settlement.getId())
-                    .bizKey(eventType.getType() + ":" + settlement.getId() + ":" + workerUserId)
-                    .recipientId(workerUserId)
-                    .templateCode(template.getCode())
-                    .templateParams(params)
-                    .build());
+            TenantUtils.execute(workerTarget.tenantId, () -> deltaEventPublisher.publishToWorker(
+                    cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
+                            .eventType(eventType.getType())
+                            .tenantId(workerTarget.tenantId)
+                            .aggregateType("SETTLEMENT")
+                            .aggregateId(settlement.getId())
+                            .bizKey(eventType.getType() + ":" + settlement.getId() + ":" + workerUserId)
+                            .recipientId(workerUserId)
+                            .templateCode(template.getCode())
+                            .templateParams(params)
+                            .build()));
         } catch (Exception e) {
             log.error("结算事件写入Outbox失败 settlementId={}, eventType={}", settlement.getId(), eventType, e);
         }
@@ -474,30 +486,50 @@ public class DeltaWorkerSettlementPhase7CoreService {
                                                    cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum eventType,
                                                    cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum template) {
         try {
-            Long workerUserId = getWorkerUserId(settlement.getWorkerId());
+            DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(settlement.getServiceOrderId());
+            if (order == null) return;
+            WorkerTarget workerTarget = resolveWorkerTarget(order);
+            Long workerUserId = workerTarget.worker.getUserId();
             if (workerUserId == null) return;
             java.util.Map<String, String> params = new java.util.HashMap<>();
             params.put("settlementNo", settlement.getSettlementNo());
             params.put("amount", String.valueOf(settlement.getWorkerAmount()));
-            deltaEventPublisher.publishToWorker(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
-                    .eventType(eventType.getType())
-                    .tenantId(settlement.getTenantId())
-                    .aggregateType("SETTLEMENT")
-                    .aggregateId(settlement.getId())
-                    .bizKey(eventType.getType() + ":" + settlement.getId() + ":" + workerUserId)
-                    .recipientId(workerUserId)
-                    .templateCode(template.getCode())
-                    .templateParams(params)
-                    .build());
+            TenantUtils.execute(workerTarget.tenantId, () -> deltaEventPublisher.publishToWorker(
+                    cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
+                            .eventType(eventType.getType())
+                            .tenantId(workerTarget.tenantId)
+                            .aggregateType("SETTLEMENT")
+                            .aggregateId(settlement.getId())
+                            .bizKey(eventType.getType() + ":" + settlement.getId() + ":" + workerUserId)
+                            .recipientId(workerUserId)
+                            .templateCode(template.getCode())
+                            .templateParams(params)
+                            .build()));
         } catch (Exception e) {
             log.error("结算事件写入Outbox失败 settlementId={}, eventType={}", settlement.getId(), eventType, e);
         }
     }
 
-    private Long getWorkerUserId(Long workerId) {
-        if (workerId == null) return null;
-        DeltaWorkerDO worker = deltaWorkerService.getWorker(workerId);
-        return worker != null ? worker.getUserId() : null;
+    private WorkerTarget resolveWorkerTarget(DeltaServiceOrderDO order) {
+        if (DispatchModeEnum.CLUB_ASSIGN.getMode().equals(order.getDispatchMode())) {
+            DeltaClubOrderTenantContext context = deltaClubOrderTenantResolver.resolve(order);
+            return new WorkerTarget(context.getWorker(), context.getWorkerTenantId());
+        }
+        DeltaWorkerDO worker = deltaWorkerService.getWorker(order.getAssignedWorkerId());
+        if (worker == null || !java.util.Objects.equals(worker.getTenantId(), order.getTenantId())) {
+            throw exception(SETTLEMENT_NO_VALID_WORKER);
+        }
+        return new WorkerTarget(worker, order.getTenantId());
+    }
+
+    private static final class WorkerTarget {
+        private final DeltaWorkerDO worker;
+        private final Long tenantId;
+
+        private WorkerTarget(DeltaWorkerDO worker, Long tenantId) {
+            this.worker = worker;
+            this.tenantId = tenantId;
+        }
     }
 
 }

@@ -1,15 +1,17 @@
 package cn.iocoder.yudao.module.delta.service.order;
 
-import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaOrderEvidenceDO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaOrderLogDO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaOrderProgressDO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaServiceOrderDO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.worker.DeltaWorkerDO;
 import cn.iocoder.yudao.module.delta.dal.mysql.order.DeltaServiceOrderMapper;
+import cn.iocoder.yudao.module.delta.controller.app.workerorder.vo.AppDeltaWorkerOrderEvidenceCreateReqVO;
+import cn.iocoder.yudao.module.delta.controller.app.workerorder.vo.AppDeltaWorkerOrderProgressCreateReqVO;
+import cn.iocoder.yudao.module.delta.enums.order.EvidenceTypeEnum;
+import cn.iocoder.yudao.module.delta.enums.order.OperatorTypeEnum;
 import cn.iocoder.yudao.module.delta.enums.order.ProgressTypeEnum;
 import cn.iocoder.yudao.module.delta.enums.order.ServiceOrderStatusEnum;
-import cn.iocoder.yudao.module.delta.service.worker.DeltaWorkerService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,6 +19,8 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Collections;
+import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.delta.enums.ErrorCodeConstants.*;
@@ -41,10 +45,6 @@ public class DeltaWorkerOrderExecutionCoreService {
     @Resource
     private DeltaServiceOrderMapper deltaServiceOrderMapper;
     @Resource
-    private DeltaWorkerService deltaWorkerService;
-    @Resource
-    private DeltaOrderAssignmentService deltaOrderAssignmentService;
-    @Resource
     private DeltaOrderLogService deltaOrderLogService;
     @Resource
     private DeltaOrderProgressService deltaOrderProgressService;
@@ -52,20 +52,17 @@ public class DeltaWorkerOrderExecutionCoreService {
     private DeltaOrderEvidenceService deltaOrderEvidenceService;
     @Resource
     private cn.iocoder.yudao.module.delta.service.event.DeltaEventPublisher deltaEventPublisher;
+    @Resource
+    private DeltaWorkerOrderAccessService deltaWorkerOrderAccessService;
 
     // ========== 开始服务 ==========
 
     @Transactional(rollbackFor = Exception.class)
-    public void doStartService(DeltaWorkerDO worker, Long serviceOrderId) {
-        // 1. 重新查询服务单（事务内最新数据）
-        DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(serviceOrderId);
-        if (order == null) {
-            throw exception(SERVICE_ORDER_NOT_EXISTS);
-        }
-        // 2. 校验分配
-        if (!worker.getId().equals(order.getAssignedWorkerId())) {
-            throw exception(SERVICE_ORDER_NOT_BELONG_TO_WORKER);
-        }
+    public void doStartService(DeltaWorkerOrderAccessContext accessContext) {
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.revalidate(accessContext);
+        DeltaServiceOrderDO order = context.getOrder();
+        DeltaWorkerDO worker = context.getWorker();
+        Long serviceOrderId = order.getId();
         // 3. 校验状态
         Integer oldStatus = order.getStatus();
         if (!ServiceOrderStatusEnum.ACCEPTED_PENDING_START.getStatus().equals(oldStatus)) {
@@ -111,36 +108,116 @@ public class DeltaWorkerOrderExecutionCoreService {
 
         log.info("开始服务成功 serviceOrderId={}, workerId={}", serviceOrderId, worker.getId());
 
-        // Phase 10: 发布开始服务事件 -> 通知买家
-        try {
-            deltaEventPublisher.publishToBuyer(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
-                    .eventType(cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum.SERVICE_STARTED.getType())
-                    .tenantId(order.getTenantId())
-                    .aggregateType("SERVICE_ORDER")
-                    .aggregateId(serviceOrderId)
-                    .bizKey("SERVICE_STARTED:" + serviceOrderId + ":" + worker.getId())
-                    .recipientId(order.getBuyerUserId())
-                    .templateCode(cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum.SERVICE_STARTED.getCode())
-                    .templateParams(java.util.Collections.singletonMap("orderNo", order.getServiceOrderNo()))
-                    .build());
-        } catch (Exception e) {
-            log.error("开始服务事件写入Outbox失败 serviceOrderId={}", serviceOrderId, e);
+        // Phase 10: 买家 Outbox 与订单一起写在来源租户
+        deltaEventPublisher.publishToBuyer(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
+                .eventType(cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum.SERVICE_STARTED.getType())
+                .tenantId(context.getSourceTenantId())
+                .aggregateType("SERVICE_ORDER")
+                .aggregateId(serviceOrderId)
+                .bizKey("SERVICE_STARTED:" + serviceOrderId + ":" + worker.getId())
+                .recipientId(order.getBuyerUserId())
+                .templateCode(cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum.SERVICE_STARTED.getCode())
+                .templateParams(Collections.singletonMap("orderNo", order.getServiceOrderNo()))
+                .build());
+    }
+
+    // ========== 进度与凭证 ==========
+
+    @Transactional(rollbackFor = Exception.class)
+    public DeltaOrderProgressDO doCreateProgress(DeltaWorkerOrderAccessContext accessContext,
+                                                  AppDeltaWorkerOrderProgressCreateReqVO reqVO) {
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.revalidate(accessContext);
+        DeltaServiceOrderDO order = context.getOrder();
+        if (!ServiceOrderStatusEnum.IN_PROGRESS.getStatus().equals(order.getStatus())) {
+            throw exception(SERVICE_ORDER_STATUS_CANNOT_PROGRESS);
         }
+        if (!ProgressTypeEnum.PROGRESS_UPDATE.getType().equals(reqVO.getProgressType())
+                && !ProgressTypeEnum.EXCEPTION_REPORT.getType().equals(reqVO.getProgressType())) {
+            throw exception(PROGRESS_TYPE_FORBIDDEN);
+        }
+        if (reqVO.getContent() == null || reqVO.getContent().trim().isEmpty()) {
+            throw exception(PROGRESS_CONTENT_EMPTY);
+        }
+        Integer percent = reqVO.getProgressPercent();
+        if (percent != null && (percent < 0 || percent > 100)) {
+            throw exception(PROGRESS_PERCENT_INVALID);
+        }
+        DeltaOrderProgressDO progress = DeltaOrderProgressDO.builder()
+                .serviceOrderId(order.getId()).workerId(context.getWorker().getId())
+                .progressType(reqVO.getProgressType()).progressPercent(percent)
+                .content(reqVO.getContent()).build();
+        deltaOrderProgressService.createProgress(progress);
+        return progress;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public DeltaOrderEvidenceDO doCreateEvidence(DeltaWorkerOrderAccessContext accessContext,
+                                                  AppDeltaWorkerOrderEvidenceCreateReqVO reqVO) {
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.revalidate(accessContext);
+        DeltaServiceOrderDO order = context.getOrder();
+        if (!ServiceOrderStatusEnum.IN_PROGRESS.getStatus().equals(order.getStatus())) {
+            throw exception(SERVICE_ORDER_STATUS_CANNOT_EVIDENCE);
+        }
+        boolean validType = false;
+        for (EvidenceTypeEnum type : EvidenceTypeEnum.values()) {
+            if (type.getType().equals(reqVO.getEvidenceType())) {
+                validType = true;
+                break;
+            }
+        }
+        if (!validType) {
+            throw exception(SERVICE_ORDER_STATUS_CANNOT_EVIDENCE);
+        }
+        if (reqVO.getFileUrl() == null || reqVO.getFileUrl().trim().isEmpty()) {
+            throw exception(EVIDENCE_URL_EMPTY);
+        }
+        if (deltaOrderEvidenceService.countEvidenceByServiceOrderId(order.getId())
+                >= MAX_EVIDENCE_PER_ORDER) {
+            throw exception(EVIDENCE_COUNT_EXCEED);
+        }
+        DeltaOrderEvidenceDO evidence = DeltaOrderEvidenceDO.builder()
+                .serviceOrderId(order.getId()).workerId(context.getWorker().getId())
+                .evidenceType(reqVO.getEvidenceType()).content(reqVO.getDescription())
+                .imageUrls(Collections.singletonList(reqVO.getFileUrl())).build();
+        deltaOrderEvidenceService.createEvidence(evidence);
+        return evidence;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void doDeleteEvidence(DeltaWorkerOrderAccessContext accessContext, Long evidenceId) {
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.revalidate(accessContext);
+        DeltaServiceOrderDO order = context.getOrder();
+        if (!ServiceOrderStatusEnum.IN_PROGRESS.getStatus().equals(order.getStatus())) {
+            throw exception(EVIDENCE_CANNOT_OPERATE_AFTER_COMPLETE);
+        }
+        DeltaOrderEvidenceDO evidence = deltaOrderEvidenceService.getEvidence(evidenceId);
+        if (evidence == null) {
+            throw exception(EVIDENCE_NOT_EXISTS_P5);
+        }
+        if (!Objects.equals(evidence.getTenantId(), context.getSourceTenantId())
+                || !Objects.equals(evidence.getServiceOrderId(), order.getId())) {
+            throw exception(WORKER_ORDER_EVIDENCE_TENANT_MISMATCH);
+        }
+        if (!Objects.equals(evidence.getWorkerId(), context.getWorker().getId())) {
+            throw exception(EVIDENCE_NOT_BELONG_TO_WORKER);
+        }
+        deltaOrderEvidenceService.deleteEvidence(evidenceId);
+        deltaOrderLogService.createOrderLog(DeltaOrderLogDO.builder()
+                .serviceOrderId(order.getId()).operatorType(OperatorTypeEnum.WORKER.getType())
+                .operatorId(context.getWorker().getId()).operation("删除凭证")
+                .beforeStatus(order.getStatus()).afterStatus(order.getStatus())
+                .content("打手ID=" + context.getWorker().getId() + " 删除凭证ID=" + evidenceId)
+                .build());
     }
 
     // ========== 提交完成 ==========
 
     @Transactional(rollbackFor = Exception.class)
-    public void doSubmitCompletion(DeltaWorkerDO worker, Long serviceOrderId, String summary) {
-        // 1. 重新查询服务单（事务内最新数据）
-        DeltaServiceOrderDO order = deltaServiceOrderMapper.selectById(serviceOrderId);
-        if (order == null) {
-            throw exception(SERVICE_ORDER_NOT_EXISTS);
-        }
-        // 2. 校验分配
-        if (!worker.getId().equals(order.getAssignedWorkerId())) {
-            throw exception(SERVICE_ORDER_NOT_BELONG_TO_WORKER);
-        }
+    public void doSubmitCompletion(DeltaWorkerOrderAccessContext accessContext, String summary) {
+        DeltaWorkerOrderAccessContext context = deltaWorkerOrderAccessService.revalidate(accessContext);
+        DeltaServiceOrderDO order = context.getOrder();
+        DeltaWorkerDO worker = context.getWorker();
+        Long serviceOrderId = order.getId();
         // 3. 校验状态
         Integer oldStatus = order.getStatus();
         if (!ServiceOrderStatusEnum.IN_PROGRESS.getStatus().equals(oldStatus)) {
@@ -194,21 +271,17 @@ public class DeltaWorkerOrderExecutionCoreService {
 
         log.info("提交完成成功 serviceOrderId={}, workerId={}", serviceOrderId, worker.getId());
 
-        // Phase 10: 发布提交完成事件 -> 通知买家
-        try {
-            deltaEventPublisher.publishToBuyer(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
-                    .eventType(cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum.SERVICE_COMPLETION_SUBMITTED.getType())
-                    .tenantId(order.getTenantId())
-                    .aggregateType("SERVICE_ORDER")
-                    .aggregateId(serviceOrderId)
-                    .bizKey("SERVICE_COMPLETION_SUBMITTED:" + serviceOrderId + ":" + worker.getId())
-                    .recipientId(order.getBuyerUserId())
-                    .templateCode(cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum.SERVICE_SUBMITTED.getCode())
-                    .templateParams(java.util.Collections.singletonMap("orderNo", order.getServiceOrderNo()))
-                    .build());
-        } catch (Exception e) {
-            log.error("提交完成事件写入Outbox失败 serviceOrderId={}", serviceOrderId, e);
-        }
+        // Phase 10: 买家 Outbox 与订单一起写在来源租户
+        deltaEventPublisher.publishToBuyer(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
+                .eventType(cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum.SERVICE_COMPLETION_SUBMITTED.getType())
+                .tenantId(context.getSourceTenantId())
+                .aggregateType("SERVICE_ORDER")
+                .aggregateId(serviceOrderId)
+                .bizKey("SERVICE_COMPLETION_SUBMITTED:" + serviceOrderId + ":" + worker.getId())
+                .recipientId(order.getBuyerUserId())
+                .templateCode(cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum.SERVICE_SUBMITTED.getCode())
+                .templateParams(Collections.singletonMap("orderNo", order.getServiceOrderNo()))
+                .build());
     }
 
 }

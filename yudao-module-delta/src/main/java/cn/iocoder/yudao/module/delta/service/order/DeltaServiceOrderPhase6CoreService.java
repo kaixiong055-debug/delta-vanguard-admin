@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.delta.service.order;
 
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.*;
 import cn.iocoder.yudao.module.delta.dal.dataobject.worker.DeltaWorkerDO;
 import cn.iocoder.yudao.module.delta.dal.mysql.order.DeltaServiceOrderMapper;
@@ -56,6 +57,8 @@ public class DeltaServiceOrderPhase6CoreService {
     private DeltaWorkerSettlementPhase7CoreService deltaWorkerSettlementPhase7CoreService;
     @Resource
     private cn.iocoder.yudao.module.delta.service.event.DeltaEventPublisher deltaEventPublisher;
+    @Resource
+    private DeltaClubOrderTenantResolver deltaClubOrderTenantResolver;
 
     // ========== 老板验收通过 ==========
 
@@ -117,6 +120,8 @@ public class DeltaServiceOrderPhase6CoreService {
             throw exception(EVIDENCE_NO_COMPLETION_EVIDENCE);
         }
 
+        WorkerTarget workerTarget = resolveWorkerTarget(order);
+
         // 5. CAS 更新服务单：WORKER_SUBMITTED -> COMPLETED
         LocalDateTime now = LocalDateTime.now();
         int rows = deltaServiceOrderMapper.updateStatusCas(
@@ -169,7 +174,7 @@ public class DeltaServiceOrderPhase6CoreService {
         deltaOrderLogService.createOrderLog(logEntry);
 
         // 9. 释放打手忙碌状态（如果没有其他有效订单）
-        releaseWorkerStatusIfNoActiveOrders(workerId);
+        releaseWorkerStatusIfNoActiveOrders(order, workerTarget);
 
         // 10. Phase 7: 生成打手结算单（待审核，同一事务内）
         deltaWorkerSettlementPhase7CoreService.createSettlementForCompletedOrder(serviceOrderId);
@@ -178,19 +183,20 @@ public class DeltaServiceOrderPhase6CoreService {
 
         // Phase 10: 发布验收完成事件 -> 通知打手
         try {
-            Long workerUserId = (order.getAssignedWorkerId() != null) ? deltaWorkerService.getWorker(order.getAssignedWorkerId()).getUserId() : null;
+            Long workerUserId = workerTarget.worker.getUserId();
             String orderNo = order.getServiceOrderNo();
             if (workerUserId != null) {
-                deltaEventPublisher.publishToWorker(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
-                        .eventType(cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum.SERVICE_ACCEPTED.getType())
-                        .tenantId(order.getTenantId())
-                        .aggregateType("SERVICE_ORDER")
-                        .aggregateId(serviceOrderId)
-                        .bizKey("SERVICE_ACCEPTED:" + serviceOrderId + ":" + workerId)
-                        .recipientId(workerUserId)
-                        .templateCode(cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum.SERVICE_ACCEPTED.getCode())
-                        .templateParams(java.util.Collections.singletonMap("orderNo", orderNo))
-                        .build());
+                TenantUtils.execute(workerTarget.tenantId, () -> deltaEventPublisher.publishToWorker(
+                        cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
+                                .eventType(cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum.SERVICE_ACCEPTED.getType())
+                                .tenantId(workerTarget.tenantId)
+                                .aggregateType("SERVICE_ORDER")
+                                .aggregateId(serviceOrderId)
+                                .bizKey("SERVICE_ACCEPTED:" + serviceOrderId + ":" + workerId)
+                                .recipientId(workerUserId)
+                                .templateCode(cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum.SERVICE_ACCEPTED.getCode())
+                                .templateParams(java.util.Collections.singletonMap("orderNo", orderNo))
+                                .build()));
             }
         } catch (Exception e) {
             log.error("验收完成事件写入Outbox失败 serviceOrderId={}", serviceOrderId, e);
@@ -222,6 +228,8 @@ public class DeltaServiceOrderPhase6CoreService {
         if (reworkCount >= MAX_REWORK_COUNT) {
             throw exception(REWORK_COUNT_EXCEED);
         }
+
+        WorkerTarget workerTarget = resolveWorkerTarget(order);
 
         // 4. CAS 更新服务单：WORKER_SUBMITTED -> IN_PROGRESS
         int rows = deltaServiceOrderMapper.updateStatusCas(
@@ -279,21 +287,22 @@ public class DeltaServiceOrderPhase6CoreService {
 
         // Phase 10: 发布返工事件 -> 通知打手
         try {
-            Long workerUserId = (order.getAssignedWorkerId() != null) ? deltaWorkerService.getWorker(order.getAssignedWorkerId()).getUserId() : null;
+            Long workerUserId = workerTarget.worker.getUserId();
             if (workerUserId != null) {
                 java.util.Map<String, String> params = new java.util.HashMap<>();
                 params.put("orderNo", order.getServiceOrderNo());
                 params.put("reason", reason != null ? reason : "");
-                deltaEventPublisher.publishToWorker(cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
-                        .eventType(cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum.SERVICE_REWORK_REQUESTED.getType())
-                        .tenantId(order.getTenantId())
-                        .aggregateType("SERVICE_ORDER")
-                        .aggregateId(serviceOrderId)
-                        .bizKey("SERVICE_REWORK_REQUESTED:" + serviceOrderId + ":" + currentReworkNo)
-                        .recipientId(workerUserId)
-                        .templateCode(cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum.SERVICE_REWORK_REQUESTED.getCode())
-                        .templateParams(params)
-                        .build());
+                TenantUtils.execute(workerTarget.tenantId, () -> deltaEventPublisher.publishToWorker(
+                        cn.iocoder.yudao.module.delta.service.event.DeltaEventPublishReq.builder()
+                                .eventType(cn.iocoder.yudao.module.delta.enums.event.DeltaEventTypeEnum.SERVICE_REWORK_REQUESTED.getType())
+                                .tenantId(workerTarget.tenantId)
+                                .aggregateType("SERVICE_ORDER")
+                                .aggregateId(serviceOrderId)
+                                .bizKey("SERVICE_REWORK_REQUESTED:" + serviceOrderId + ":" + currentReworkNo)
+                                .recipientId(workerUserId)
+                                .templateCode(cn.iocoder.yudao.module.delta.enums.event.DeltaNotificationTemplateEnum.SERVICE_REWORK_REQUESTED.getCode())
+                                .templateParams(params)
+                                .build()));
             }
         } catch (Exception e) {
             log.error("返工事件写入Outbox失败 serviceOrderId={}", serviceOrderId, e);
@@ -308,12 +317,14 @@ public class DeltaServiceOrderPhase6CoreService {
      * 如果打手没有其他有效订单（不包括已完成/已取消/售后/纠纷），则将 BUSY 恢复为 ONLINE。
      * 如果打手已被停用，保持 OFFLINE 或当前状态。
      */
-    private void releaseWorkerStatusIfNoActiveOrders(Long workerId) {
+    private void releaseWorkerStatusIfNoActiveOrders(DeltaServiceOrderDO completedOrder,
+                                                      WorkerTarget workerTarget) {
+        Long workerId = completedOrder.getAssignedWorkerId();
         if (workerId == null) {
             return;
         }
 
-        DeltaWorkerDO worker = deltaWorkerService.getWorker(workerId);
+        DeltaWorkerDO worker = workerTarget.worker;
         if (worker == null) {
             return;
         }
@@ -330,18 +341,44 @@ public class DeltaServiceOrderPhase6CoreService {
             return;
         }
 
-        // 检查是否有其他有效分配
-        List<DeltaOrderAssignmentDO> activeAssignments = deltaOrderAssignmentService.getActiveAssignmentsByWorkerId(workerId);
-        if (activeAssignments.isEmpty()) {
+        // 服务单跨租户统计，排除当前已完成订单
+        boolean hasOtherActiveOrder = TenantUtils.executeIgnore(() ->
+                deltaServiceOrderMapper.existsOtherActiveByWorkerId(workerId, completedOrder.getId()));
+        if (!hasOtherActiveOrder) {
             // 没有其他有效订单，恢复为 ONLINE
-            int rows = deltaWorkerService.getWorkerMapper().updateWorkStatusCas(
-                    workerId,
-                    WorkerWorkStatusEnum.ONLINE.getStatus(),
-                    WorkerWorkStatusEnum.BUSY.getStatus()
-            );
+            int rows = TenantUtils.execute(workerTarget.tenantId, () ->
+                    deltaWorkerService.getWorkerMapper().updateWorkStatusCas(
+                            workerId,
+                            WorkerWorkStatusEnum.ONLINE.getStatus(),
+                            WorkerWorkStatusEnum.BUSY.getStatus()));
+            if (rows != 1) {
+                throw exception(WORKER_ORDER_WORKER_STATUS_CHANGED);
+            }
             log.info("验收通过恢复打手状态 workerId={}, BUSY→ONLINE, affected={}", workerId, rows);
         } else {
-            log.info("验收通过但打手仍有{}个有效订单，保持BUSY workerId={}", activeAssignments.size(), workerId);
+            log.info("验收通过但打手仍有其他有效订单，保持BUSY workerId={}", workerId);
+        }
+    }
+
+    private WorkerTarget resolveWorkerTarget(DeltaServiceOrderDO order) {
+        if (DispatchModeEnum.CLUB_ASSIGN.getMode().equals(order.getDispatchMode())) {
+            DeltaClubOrderTenantContext context = deltaClubOrderTenantResolver.resolve(order);
+            return new WorkerTarget(context.getWorker(), context.getWorkerTenantId());
+        }
+        DeltaWorkerDO worker = deltaWorkerService.getWorker(order.getAssignedWorkerId());
+        if (worker == null || !java.util.Objects.equals(worker.getTenantId(), order.getTenantId())) {
+            throw exception(SERVICE_ORDER_NOT_BELONG_TO_WORKER);
+        }
+        return new WorkerTarget(worker, order.getTenantId());
+    }
+
+    private static final class WorkerTarget {
+        private final DeltaWorkerDO worker;
+        private final Long tenantId;
+
+        private WorkerTarget(DeltaWorkerDO worker, Long tenantId) {
+            this.worker = worker;
+            this.tenantId = tenantId;
         }
     }
 

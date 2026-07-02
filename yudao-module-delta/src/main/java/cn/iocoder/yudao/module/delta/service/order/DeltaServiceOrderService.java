@@ -49,8 +49,8 @@ public interface DeltaServiceOrderService {
     void claimOrder(Long loginUserId, Long serviceOrderId);
     PageResult<DeltaServiceOrderDO> getPoolPage(Long workerId, Integer deviceType, Integer serviceType, PageParam pageParam);
     DeltaServiceOrderDO getPoolDetail(Long id, Long workerId);
-    PageResult<DeltaServiceOrderDO> getWorkerOrderPage(Long workerId, Integer status, PageParam pageParam);
-    DeltaServiceOrderDO getWorkerOrderDetail(Long id, Long workerId);
+    PageResult<DeltaServiceOrderDO> getWorkerOrderPage(Long loginUserId, Integer status, PageParam pageParam);
+    DeltaServiceOrderDO getWorkerOrderDetail(Long id, Long loginUserId);
 
     // ====== Phase 5 打手服务执行 ======
 

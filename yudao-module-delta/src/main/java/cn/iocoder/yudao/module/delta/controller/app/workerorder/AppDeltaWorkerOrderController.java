@@ -10,9 +10,7 @@ import cn.iocoder.yudao.module.delta.convert.order.DeltaServiceOrderConvert;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaOrderEvidenceDO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaOrderProgressDO;
 import cn.iocoder.yudao.module.delta.dal.dataobject.order.DeltaServiceOrderDO;
-import cn.iocoder.yudao.module.delta.dal.dataobject.worker.DeltaWorkerDO;
 import cn.iocoder.yudao.module.delta.service.order.DeltaServiceOrderService;
-import cn.iocoder.yudao.module.delta.service.worker.DeltaWorkerService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.validation.annotation.Validated;
@@ -36,8 +34,6 @@ public class AppDeltaWorkerOrderController {
 
     @Resource
     private DeltaServiceOrderService deltaServiceOrderService;
-    @Resource
-    private DeltaWorkerService deltaWorkerService;
 
     // ====== Phase 4 已有 ======
 
@@ -46,9 +42,8 @@ public class AppDeltaWorkerOrderController {
     public CommonResult<PageResult<AppDeltaOrderPoolRespVO>> getWorkerOrderPage(
             @Valid AppDeltaWorkerOrderPageReqVO pageReqVO) {
         Long userId = getLoginUserId();
-        DeltaWorkerDO worker = getCurrentWorker(userId);
         PageResult<DeltaServiceOrderDO> pageResult = deltaServiceOrderService.getWorkerOrderPage(
-                worker.getId(), pageReqVO.getStatus(), pageReqVO);
+                userId, pageReqVO.getStatus(), pageReqVO);
         return success(DeltaServiceOrderConvert.INSTANCE.convertPoolPage(pageResult));
     }
 
@@ -57,8 +52,7 @@ public class AppDeltaWorkerOrderController {
     public CommonResult<AppDeltaWorkerOrderDetailRespVO> getWorkerOrderDetail(
             @RequestParam("id") Long id) {
         Long userId = getLoginUserId();
-        DeltaWorkerDO worker = getCurrentWorker(userId);
-        DeltaServiceOrderDO order = deltaServiceOrderService.getWorkerOrderDetail(id, worker.getId());
+        DeltaServiceOrderDO order = deltaServiceOrderService.getWorkerOrderDetail(id, userId);
         return success(DeltaServiceOrderConvert.INSTANCE.convertWorkerOrderDetail(order));
     }
 
@@ -131,15 +125,6 @@ public class AppDeltaWorkerOrderController {
         Long userId = getLoginUserId();
         deltaServiceOrderService.submitCompletion(userId, reqVO.getServiceOrderId(), reqVO.getSummary());
         return success(true);
-    }
-
-    private DeltaWorkerDO getCurrentWorker(Long userId) {
-        DeltaWorkerDO worker = deltaWorkerService.getWorkerByUserId(userId);
-        if (worker == null) {
-            throw cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil
-                    .exception(cn.iocoder.yudao.module.delta.enums.ErrorCodeConstants.ASSIGNMENT_NO_WORKER_IDENTITY);
-        }
-        return worker;
     }
 
 }

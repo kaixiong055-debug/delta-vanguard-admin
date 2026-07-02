@@ -4,6 +4,7 @@ import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.delta.dal.dataobject.market.DeltaOrderMarketListingDO;
+import cn.iocoder.yudao.module.delta.enums.market.DeltaOrderMarketStatusEnum;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
 
@@ -33,6 +34,16 @@ public interface DeltaOrderMarketListingMapper extends BaseMapperX<DeltaOrderMar
     default DeltaOrderMarketListingDO selectByServiceOrderId(Long serviceOrderId) {
         return selectOne(new LambdaQueryWrapperX<DeltaOrderMarketListingDO>()
                 .eq(DeltaOrderMarketListingDO::getServiceOrderId, serviceOrderId)
+                .orderByDesc(DeltaOrderMarketListingDO::getId)
+                .last("LIMIT 1"));
+    }
+
+    /** 根据服务订单 ID 查询可信 CLAIMED 挂牌。 */
+    default DeltaOrderMarketListingDO selectClaimedByServiceOrderId(Long serviceOrderId) {
+        return selectOne(new LambdaQueryWrapperX<DeltaOrderMarketListingDO>()
+                .eq(DeltaOrderMarketListingDO::getServiceOrderId, serviceOrderId)
+                .eq(DeltaOrderMarketListingDO::getListingStatus,
+                        DeltaOrderMarketStatusEnum.CLAIMED.getStatus())
                 .orderByDesc(DeltaOrderMarketListingDO::getId)
                 .last("LIMIT 1"));
     }
