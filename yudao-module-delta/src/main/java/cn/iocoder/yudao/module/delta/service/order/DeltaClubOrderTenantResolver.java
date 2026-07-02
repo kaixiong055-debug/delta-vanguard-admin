@@ -59,7 +59,7 @@ public class DeltaClubOrderTenantResolver {
             throw exception(WORKER_ORDER_CROSS_TENANT_CONTEXT_NOT_FOUND);
         }
 
-        DeltaServiceOrderDO order = sourceOrder;
+        DeltaServiceOrderDO order = null;
         if (order == null) {
             order = TenantUtils.execute(listing.getSourceTenantId(),
                     () -> serviceOrderMapper.selectById(serviceOrderId));
@@ -71,6 +71,8 @@ public class DeltaClubOrderTenantResolver {
                 }
                 throw exception(SERVICE_ORDER_NOT_EXISTS);
             }
+        } else {
+            order = sourceOrder;
         }
         validateOrder(order, listing);
 
@@ -83,8 +85,9 @@ public class DeltaClubOrderTenantResolver {
             throw exception(WORKER_ORDER_CLUB_MISMATCH);
         }
 
+        DeltaServiceOrderDO finalOrder = order;
         DeltaWorkerDO worker = TenantUtils.execute(clubTenantId,
-                () -> workerMapper.selectById(order.getAssignedWorkerId()));
+                () -> workerMapper.selectById(finalOrder.getAssignedWorkerId()));
         if (worker == null || !Objects.equals(worker.getTenantId(), clubTenantId)) {
             throw exception(CLUB_ORDER_WORKER_TENANT_MISMATCH);
         }
