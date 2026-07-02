@@ -1,0 +1,6690 @@
+# Delta 先锋俱乐部 - Vue3 管理后台 API 接口文档
+
+> **权威来源**：本文件完全基于 `d:\delta-vanguard\delta-vanguard-admin` 刚后端真实代码生成。
+> **生成日期**：2026-06-23
+
+---
+
+## 1. 文档说明
+
+本文档覆盖 Delta 先锋俱乐部管理后台所需的服务履约订单、派单、验收、返工等接口。所有字段、枚举值、错误码、权限标识均从后端 Java 源码直接提取，不含任何推测。
+
+---
+
+## 2. API 前缀规则
+
+| 项 | 值 |
+|---|---|
+| 后端 `@RequestMapping` 前缀 | `/delta` |
+| 完整后端路径示例 | `/admin-api/delta/service-order/page` |
+| Vue 前端应使用的路径 | `/delta/service-order/page` |
+| Axios 自动拼接前缀 | `/admin-api`（由框架统一配置） |
+
+> ⚠️ **重要**：Vue3 前端代码中**不得**写 `/admin-api/delta/xxx`，否则 Axios 会拼接成 `/admin-api/admin-api/delta/xxx` 导致 404。
+
+---
+
+## 3. 服务订单状态枚举
+
+**源文件**：`ServiceOrderStatusEnum.java`
+
+| 状态值 | 枚举常量 | 中文名称 | 可流转到的下一状态 |
+|--------|----------|----------|---------------------|
+| 10 | `PENDING_DISPATCH` | 待派单 | 20, 30 |
+| 20 | `WAITING_DESIGNATED` | 等待指定打手确认 | 30, 40 |
+| 30 | `POOL_PENDING` | 接单大厅待领取 | 40 |
+| 40 | `ACCEPTED_PENDING_START` | 已接单待开始 | 30, 40, 50 |
+| 50 | `IN_PROGRESS` | 服务进行中 | 60 |
+| 60 | `WORKER_SUBMITTED` | 打手已提交完成 | 50, 70, 80 |
+| 70 | `PENDING_VERIFICATION` | 待客户或客服验收 | 50, 80 |
+| 80 | `COMPLETED` | 已完成 | 90（售后） |
+| 90 | `AFTER_SALE` | 售后处理中 | 100 |
+| 100 | `DISPUTE` | 纠纷处理中 | 80, 90 |
+| 110 | `CANCELED` | 已取消 | 无 |
+
+> **注意**：
+> - 状态值在代码中为 `Integer` 类型。
+> - 状态 70 (`PENDING_VERIFICATION`) 在当前 Controller 中没有直接操作入口；已提交打手直接到达状态 60 (`WORKER_SUBMITTED`)，验收接口从此状态触发。
+> - 状态 70 作为中间状态存在，但当前业务仅在 60→80/50 之间流转。
+
+---
+
+## 4. 服务订单状态操作矩阵
+
+**源文件**：`DeltaServiceOrderServiceImpl.java` + `DeltaServiceOrderPhase6CoreService.java`
+
+| 当前状态 | confirm | dispatch | reassign | return-pool | accept | request-rework |
+|----------|---------|----------|----------|-------------|--------|----------------|
+| 10 (待派单) | **允许** →30 | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+| 20 (等待确认) | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+| 30 (待领取) | 不允许 | **允许** →40 | 不允许 | 不允许 | 不允许 | 不允许 |
+| 40 (已接单待开始) | 不允许 | 不允许 | **允许** →40 | **允许** →30 | 不允许 | 不允许 |
+| 50 (服务进行中) | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+| 60 (已提交完成) | 不允许 | 不允许 | 不允许 | 不允许 | **允许** →80 | **条件允许** →50 |
+| 70 (待验收) | 不允许 | 不允许 | 不允许 | 不允许 | **允许** →80 | **条件允许** →50 |
+| 80 (已完成) | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+
+### 条件说明
+
+- **reassign**：要求当前打手存在（`assignedWorkerId != null`），否则抛出 `ASSIGNMENT_WORKER_NOT_AVAILABLE`
+- **dispatch**：需要校验打手审核通过、已启用、在线、技能匹配、无其他有效订单
+- **request-rework**：要求状态为 `WORKER_SUBMITTED`（60）且返工次数 < 3（`MAX_REWORK_COUNT = 3`）
+
+### 状态流转总图
+
+```
+10(待派单) ──confirm──▶ 30(待领取) ──dispatch──▶ 40(已接单待开始)
+                                                      ▲        │
+                                                      │        ├──start──▶ 50(进行中) ──submit──▶ 60(已提交)
+                                                      │        │                         ▲              │
+                               return-pool ───────────┘        │                         │              │
+                                                               │       request-rework ───┘              │
+                                                               │                                     accept
+                                                               │                                        │
+                                                               └──reassign(同状态)                       ▼
+                                                                                                   80(已完成)
+```
+
+---
+
+## 5. 服务订单分页
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 分页查询服务履约订单 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/service-order/page` |
+| Vue 前端路径 | `/delta/service-order/page` |
+| 权限编码 | `delta:service-order:query` |
+| ReqVO | `DeltaServiceOrderPageReqVO` |
+| RespVO | `CommonResult<PageResult<DeltaServiceOrderRespVO>>` |
+
+### Query 参数
+
+**源文件**：`DeltaServiceOrderPageReqVO.java`（继承 `PageParam`）
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `pageNo` | `Long` | 否 | PageParam 默认值 | 页码，从 1 开始 |
+| `pageSize` | `Long` | 否 | PageParam 默认值 | 每页条数 |
+| `serviceOrderNo` | `String` | 否 | 无 | 服务订单号 |
+| `tradeOrderNo` | `String` | 否 | 无 | 商城订单号 |
+| `buyerUserId` | `Long` | 否 | 无 | 会员 ID |
+| `spuId` | `Long` | 否 | 无 | SPU ID |
+| `skuId` | `Long` | 否 | 无 | SKU ID |
+| `serviceType` | `Integer` | 否 | 无 | 服务类型：1-陪玩 2-护航 3-趣味单 |
+| `deviceType` | `Integer` | 否 | 无 | 设备类型：1-手机 2-平板 3-PC |
+| `status` | `Integer` | 否 | 无 | 履约状态 |
+| `createTime` | `LocalDateTime[]` | 否 | 无 | 创建时间范围（2个元素） |
+
+### 响应字段
+
+**源文件**：`DeltaServiceOrderRespVO.java`
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 服务订单 ID |
+| `serviceOrderNo` | `String` | 否 | 服务订单号 |
+| `tradeOrderId` | `Long` | 否 | 商城订单 ID |
+| `tradeOrderNo` | `String` | 否 | 商城订单号 |
+| `tradeOrderItemId` | `Long` | 否 | 商城订单项 ID |
+| `buyerUserId` | `Long` | 否 | 会员 ID |
+| `memberNickname` | `String` | 是（Controller 拼接） | 会员昵称 |
+| `memberAvatar` | `String` | 是（Controller 拼接） | 会员头像 |
+| `spuId` | `Long` | 否 | SPU ID |
+| `skuId` | `Long` | 否 | SKU ID |
+| `productName` | `String` | 否 | 商品名称（快照） |
+| `skuName` | `String` | 否 | SKU 名称（快照） |
+| `count` | `Integer` | 否 | 购买数量 |
+| `serviceAmount` | `Integer` | 否 | 实付金额（**单位：分**） |
+| `serviceType` | `Integer` | 否 | 服务类型 |
+| `deviceType` | `Integer` | 否 | 设备类型 |
+| `status` | `Integer` | 否 | 履约状态 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+| `updateTime` | `LocalDateTime` | 否 | 更新时间 |
+
+### 不存在的字段（确认后端未提供）
+
+以下字段在 `DeltaServiceOrderRespVO` 中**不存在**：
+
+| 字段名 | 说明 |
+|--------|------|
+| `workerId` | 未在分页/详情 VO 中暴露 |
+| `workerNo` | 不存在 |
+| `workerNickname` | 不存在 |
+| `workerAvatar` | 不存在 |
+| `dispatchTime` | 不存在 |
+| `reassignCount` | 不存在 |
+| `serviceRequirement` | 不存在 |
+| `productPicUrl` | DO 存在但 VO 未映射 |
+
+> **注意**：`memberNickname` 和 `memberAvatar` 不是从 DO 直接映射而来，而是在 Controller 中通过 `MemberUserApi.getUserMap()` 额外拼接。
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": {
+    "total": 100,
+    "list": [
+      {
+        "id": 1,
+        "serviceOrderNo": "DSO202306011200001",
+        "tradeOrderId": 100,
+        "tradeOrderNo": "202305310001",
+        "tradeOrderItemId": 200,
+        "buyerUserId": 1001,
+        "memberNickname": "张三",
+        "memberAvatar": "https://...",
+        "spuId": 1001,
+        "skuId": 2001,
+        "productName": "王者荣耀陪玩",
+        "skuName": "1小时体验",
+        "count": 1,
+        "serviceAmount": 5000,
+        "serviceType": 1,
+        "deviceType": 1,
+        "status": 10,
+        "createTime": "2023-06-01T12:00:00",
+        "updateTime": "2023-06-01T12:00:00"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 6. 服务订单详情
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询服务履约订单详情 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/service-order/get` |
+| Vue 前端路径 | `/delta/service-order/get` |
+| 权限编码 | `delta:service-order:query` |
+| RespVO | `CommonResult<DeltaServiceOrderRespVO>` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | 是 | `@RequestParam("id")` | 服务订单 ID |
+
+### 响应字段
+
+同 **第 5 节 响应字段**。
+
+> **注意**：详情接口的 `memberNickname`/`memberAvatar` 通过 `MemberUserApi.getUser(order.getBuyerUserId())` 单独查询并拼接。
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": {
+    "id": 1,
+    "serviceOrderNo": "DSO202306011200001",
+    "tradeOrderId": 100,
+    "tradeOrderNo": "202305310001",
+    "tradeOrderItemId": 200,
+    "buyerUserId": 1001,
+    "memberNickname": "张三",
+    "memberAvatar": "https://...",
+    "spuId": 1001,
+    "skuId": 2001,
+    "productName": "王者荣耀陪玩",
+    "skuName": "1小时体验",
+    "count": 1,
+    "serviceAmount": 5000,
+    "serviceType": 1,
+    "deviceType": 1,
+    "status": 10,
+    "createTime": "2023-06-01T12:00:00",
+    "updateTime": "2023-06-01T12:00:00"
+  }
+}
+```
+
+---
+
+## 7. 确认订单
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 确认服务单（进入订单池） |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/service-order/confirm` |
+| Vue 前端路径 | `/delta/service-order/confirm` |
+| 权限编码 | `delta:service-order:confirm` |
+| ReqVO | `DeltaServiceOrderConfirmReqVO` |
+
+### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 服务单 ID |
+
+> ⚠️ **注意**：confirm 接口使用的是 `id` 字段，不是 `serviceOrderId`！
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `remark` | `String` | 否 | 无 | 确认备注 |
+
+### 允许调用的订单状态
+
+- **当前状态**：`10`（`PENDING_DISPATCH` 待派单）
+- **调用后目标状态**：`30`（`POOL_PENDING` 接单大厅待领取）
+
+### 业务限制
+
+- 使用 **CAS 乐观锁**（`updateStatusCas`）更新状态
+- CAS 失败抛出 `SERVICE_ORDER_STATUS_INVALID`
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 8. 手动派单
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 人工派单 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/service-order/dispatch` |
+| Vue 前端路径 | `/delta/service-order/dispatch` |
+| 权限编码 | `delta:service-order:dispatch` |
+| ReqVO | `DeltaServiceOrderDispatchReqVO` |
+
+### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `serviceOrderId` | `Long` | **是** | `@NotNull` | 服务单 ID |
+| `workerId` | `Long` | **是** | `@NotNull` | 打手 ID |
+| `remark` | `String` | 否 | 无 | 派单备注 |
+
+### 字段确认
+
+| 问题 | 答案 |
+|------|------|
+| 订单字段是 `id` 还是 `serviceOrderId`？ | **`serviceOrderId`** |
+| 打手字段名称？ | **`workerId`** (Long) |
+| 派单备注字段？ | `remark` |
+| 是否包含版本号？ | **否** |
+| 是否包含幂等键？ | **否** |
+| 是否包含截止时间？ | **否** |
+| 是否包含通知选项？ | **否** |
+
+### 允许调用的订单状态
+
+- **当前状态**：`30`（`POOL_PENDING` 接单大厅待领取）
+- **调用后目标状态**：`40`（`ACCEPTED_PENDING_START` 已接单待开始）
+
+### 业务限制
+
+1. 服务单必须处于 `POOL_PENDING` 状态
+2. 不能有已存在的有效分配记录
+3. 打手必须审核通过、已启用、在线（`ONLINE`）
+4. 打手技能必须匹配订单的 `deviceType` + `serviceType`
+5. 打手不能有其他有效订单
+6. 派单成功后打手状态从 `ONLINE` → `BUSY`
+
+### 并发规则
+
+- 无分布式锁，使用 **CAS 乐观锁**（`updateStatusCas`）
+- CAS 失败抛出 `ASSIGNMENT_ORDER_BEING_PROCESSED`
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 9. 改派
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 改派打手 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/service-order/reassign` |
+| Vue 前端路径 | `/delta/service-order/reassign` |
+| 权限编码 | `delta:service-order:reassign` |
+| ReqVO | `DeltaServiceOrderReassignReqVO` |
+
+### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `serviceOrderId` | `Long` | **是** | `@NotNull` | 服务单 ID |
+| `newWorkerId` | `Long` | **是** | `@NotNull` | 新打手 ID |
+| `reason` | `String` | **是** | `@NotBlank` | 改派原因 |
+
+### 字段确认
+
+| 问题 | 答案 |
+|------|------|
+| 订单字段名称？ | `serviceOrderId` |
+| 改派新打手字段名称？ | **`newWorkerId`** |
+| 改派原因字段名称？ | **`reason`** |
+| 是否包含版本号？ | 否 |
+| 是否包含幂等键？ | 否 |
+
+### 允许调用的订单状态
+
+- **当前状态**：`40`（`ACCEPTED_PENDING_START` 已接单待开始）
+- **调用后目标状态**：`40`（**同状态不变**，仅更换打手）
+
+### 业务限制
+
+1. 服务单必须处于 `ACCEPTED_PENDING_START`，否则抛出 `ASSIGNMENT_ORDER_ALREADY_STARTED`
+2. 必须有现打手（`assignedWorkerId != null`）
+3. 新打手必须通过所有派单校验（审核通过、已启用、在线、技能匹配、无其他有效订单）
+4. 取消旧分配记录，创建新分配记录
+5. 新打手设为 `BUSY`，恢复旧打手状态（若无其他有效订单则 `ONLINE`）
+
+### 并发规则
+
+- 使用 CAS 乐观锁更新（同状态 CAS）
+- CAS 失败抛出 `ASSIGNMENT_ORDER_BEING_PROCESSED`
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 10. 退回接单池
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 退回订单池 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/service-order/return-pool` |
+| Vue 前端路径 | `/delta/service-order/return-pool` |
+| 权限编码 | `delta:service-order:return-pool` |
+| ReqVO | `DeltaServiceOrderReturnPoolReqVO` |
+
+### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `serviceOrderId` | `Long` | **是** | `@NotNull` | 服务单 ID |
+| `reason` | `String` | **是** | `@NotBlank` | 退回原因 |
+
+### 允许调用的订单状态
+
+- **当前状态**：`40`（`ACCEPTED_PENDING_START` 已接单待开始）
+- **调用后目标状态**：`30`（`POOL_PENDING` 接单大厅待领取）
+
+### 业务限制
+
+1. 服务单必须处于 `ACCEPTED_PENDING_START`，否则抛出 `ASSIGNMENT_ORDER_ALREADY_STARTED`
+2. 取消旧分配记录
+3. 清空 `assignedWorkerId`
+4. 恢复旧打手状态（若无其他有效订单则 `BUSY→ONLINE`）
+
+### 并发规则
+
+- 使用 CAS 乐观锁更新
+- CAS 失败抛出 `ASSIGNMENT_ORDER_BEING_PROCESSED`
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 11. 管理员验收
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 后台验收通过 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/service-order/accept` |
+| Vue 前端路径 | `/delta/service-order/accept` |
+| 权限编码 | `delta:service-order:accept` |
+| ReqVO | `DeltaServiceOrderAcceptReqVO` |
+
+### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `serviceOrderId` | `Long` | **是** | `@NotNull` | 服务订单 ID |
+| `remark` | `String` | 否 | 无 | 验收备注 |
+
+### 允许调用的订单状态
+
+- **当前状态**：`60`（`WORKER_SUBMITTED` 打手已提交完成）
+- **调用后目标状态**：`80`（`COMPLETED` 已完成）
+
+### 业务限制
+
+1. 状态必须是 `WORKER_SUBMITTED`（`isAcceptable`）
+2. 如果已是 `COMPLETED`，抛出 `SERVICE_ORDER_ALREADY_ACCEPTED`
+3. 必须有有效分配记录
+4. 至少有一条有效凭证
+5. 验收后自动释放打手状态（`BUSY→ONLINE`）
+6. 验收后自动生成打手结算单（Phase 7）
+
+### 并发规则
+
+- 使用 **Redisson 分布式锁**（按 `tenantId + serviceOrderId` 加锁）
+- 事务内使用 CAS 乐观锁更新
+- CAS 失败抛出 `SERVICE_ORDER_STATUS_CHANGED`
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 12. 发起返工
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 后台要求返工 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/service-order/request-rework` |
+| Vue 前端路径 | `/delta/service-order/request-rework` |
+| 权限编码 | `delta:service-order:rework` |
+| ReqVO | `DeltaServiceOrderReworkReqVO` |
+
+### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `serviceOrderId` | `Long` | **是** | `@NotNull` | 服务订单 ID |
+| `reason` | `String` | **是** | `@NotBlank` | 返工原因 |
+
+### 允许调用的订单状态
+
+- **当前状态**：`60`（`WORKER_SUBMITTED` 打手已提交完成）
+- **调用后目标状态**：`50`（`IN_PROGRESS` 服务进行中）
+
+### 业务限制
+
+1. 状态必须是 `WORKER_SUBMITTED`（`isReworkable`）
+2. 返工次数 < 3（`MAX_REWORK_COUNT = 3`），超过抛出 `REWORK_COUNT_EXCEED`
+3. 返工后打手**保持忙碌**（不释放）
+4. 自动创建进度记录（`REWORK_REQUEST` 类型）和返工记录
+
+### 并发规则
+
+- 使用 **Redisson 分布式锁**（按 `tenantId + serviceOrderId` 加锁）
+- 事务内使用 CAS 乐观锁更新（60→50）
+- CAS 失败抛出 `SERVICE_ORDER_STATUS_CHANGED`
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 13. 服务进度记录
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 后台查询服务单进度 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/service-order/progress-list` |
+| Vue 前端路径 | `/delta/service-order/progress-list` |
+| 权限编码 | `delta:service-order:query` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `serviceOrderId` | `Long` | 是 | 服务订单 ID |
+
+### 响应
+
+返回类型：`CommonResult<List<DeltaOrderProgressDO>>`
+
+> ⚠️ **注意**：Admin 端直接返回 `DeltaOrderProgressDO`（数据库实体），不经过 VO 转换！
+
+### DeltaOrderProgressDO 字段
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 进度 ID |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `workerId` | `Long` | 否 | 打手 ID |
+| `progressType` | `Integer` | 否 | 进度类型：1-开始服务 2-进度更新 3-异常报告 |
+| `progressPercent` | `Integer` | 是 | 进度百分比（0-100） |
+| `content` | `String` | 否 | 进度内容 |
+| `imageUrls` | `List<String>` | 是 | 进度图片 URL 列表（JSON 数组） |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+
+> **注意**：无操作人名称字段（仅 `workerId`），需前端自行映射。
+
+### 排序规则
+
+- 按 `createTime` **升序**排列（由 Service 层 `getProgressListByServiceOrderId` 返回，具体排序取决于 Mapper 实现）
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": [
+    {
+      "id": 1,
+      "serviceOrderId": 100,
+      "workerId": 10,
+      "progressType": 1,
+      "progressPercent": 0,
+      "content": "已开始服务",
+      "imageUrls": [],
+      "createTime": "2023-06-01T14:00:00"
+    }
+  ]
+}
+```
+
+---
+
+## 14. 完成凭证
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 后台查询服务单凭证 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/service-order/evidence-list` |
+| Vue 前端路径 | `/delta/service-order/evidence-list` |
+| 权限编码 | `delta:service-order:query` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `serviceOrderId` | `Long` | 是 | 服务订单 ID |
+
+### 响应
+
+返回类型：`CommonResult<List<DeltaOrderEvidenceDO>>`
+
+> ⚠️ **注意**：Admin 端直接返回 `DeltaOrderEvidenceDO`（数据库实体），不经过 VO 转换！
+
+### DeltaOrderEvidenceDO 字段
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 凭证 ID |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `workerId` | `Long` | 否 | 打手 ID |
+| `evidenceType` | `Integer` | 否 | 凭证类型：1-截图 2-视频 3-文字说明 4-文件 |
+| `content` | `String` | 是 | 凭证内容/说明 |
+| `imageUrls` | `List<String>` | 是 | 凭证图片 URL 列表（JSON 数组，JacksonTypeHandler 处理） |
+| `videoUrl` | `String` | 是 | 凭证视频 URL |
+| `reviewStatus` | `Integer` | 否 | 审核状态：0-待审核 1-审核通过 2-审核驳回 |
+| `reviewRemark` | `String` | 是 | 审核备注 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+
+> **注意**：`imageUrls` 在后端是 `List<String>` 类型，通过 `JacksonTypeHandler` 序列化到数据库 JSON 列。JSON 序列化后为 `["url1", "url2"]`。
+
+### 排序规则
+
+- 按 `createTime` **升序**排列
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": [
+    {
+      "id": 1,
+      "serviceOrderId": 100,
+      "workerId": 10,
+      "evidenceType": 1,
+      "content": "任务完成截图",
+      "imageUrls": ["https://cos.example.com/img1.png"],
+      "videoUrl": null,
+      "reviewStatus": 0,
+      "reviewRemark": null,
+      "createTime": "2023-06-01T15:00:00"
+    }
+  ]
+}
+```
+
+---
+
+## 15. 全流程时间线
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 后台查看履约时间线 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/service-order/timeline` |
+| Vue 前端路径 | `/delta/service-order/timeline` |
+| 权限编码 | `delta:service-order:query` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `serviceOrderId` | `Long` | 是 | 服务订单 ID |
+
+### 响应
+
+返回类型：`CommonResult<List<AppDeltaServiceOrderTimelineRespVO>>`
+
+### AppDeltaServiceOrderTimelineRespVO 字段
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `nodeType` | `String` | 否 | 节点类型：`PROGRESS` / `LOG` / `EVIDENCE` |
+| `title` | `String` | 否 | 标题（如"客服派单"、"进度更新"、"登记凭证-截图"） |
+| `content` | `String` | 是 | 内容 |
+| `operatorType` | `String` | 可能为空 | 操作人类型：`CUSTOMER` / `WORKER` / `ADMIN` / `SYSTEM`。买家端不暴露 ADMIN，后台暴露 |
+| `operatorName` | `String` | 是 | 操作人名称（打手 displayName 或 "管理员{id}"） |
+| `eventTime` | `LocalDateTime` | 否 | 事件时间 |
+
+> **operatorType 差异**：
+> - **后台（Admin）** 调用：`operatorType` 会包含 `ADMIN` 类型
+> - **买家端（App）** 调用：`operatorType` 不暴露 `ADMIN`（设为 null）
+
+### 排序规则
+
+- 按 `eventTime` **升序**排列
+
+### 时间线构建逻辑
+
+时间线聚合三类数据：
+1. **日志节点**（`nodeType=LOG`）：操作日志（`DeltaOrderLogDO`），标题为日志的 `operation` 字段
+2. **进度节点**（`nodeType=PROGRESS`）：服务进度（`DeltaOrderProgressDO`），标题为进度类型名
+3. **凭证节点**（`nodeType=EVIDENCE`）：服务凭证（`DeltaOrderEvidenceDO`），标题为"登记凭证-{凭证类型名}"
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": [
+    {
+      "nodeType": "LOG",
+      "title": "确认服务单",
+      "content": "已和客户确认服务要求",
+      "operatorType": "ADMIN",
+      "operatorName": "管理员100",
+      "eventTime": "2023-06-01T12:30:00"
+    },
+    {
+      "nodeType": "LOG",
+      "title": "客服派单",
+      "content": "指派打手ID=10, 备注: 客服人工派单",
+      "operatorType": "ADMIN",
+      "operatorName": "管理员100",
+      "eventTime": "2023-06-01T13:00:00"
+    },
+    {
+      "nodeType": "PROGRESS",
+      "title": "进度更新",
+      "content": "已完成第一阶段任务",
+      "operatorType": "WORKER",
+      "operatorName": "王牌打手",
+      "eventTime": "2023-06-01T14:00:00"
+    },
+    {
+      "nodeType": "EVIDENCE",
+      "title": "登记凭证-截图",
+      "content": "任务完成截图",
+      "operatorType": "WORKER",
+      "operatorName": "王牌打手",
+      "eventTime": "2023-06-01T15:00:00"
+    }
+  ]
+}
+```
+
+---
+
+## 16. 验收记录
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询验收记录 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/service-order/acceptance-list` |
+| Vue 前端路径 | `/delta/service-order/acceptance-list` |
+| 权限编码 | `delta:service-order:query` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `serviceOrderId` | `Long` | 是 | 服务订单 ID |
+
+### 响应
+
+返回类型：`CommonResult<List<DeltaOrderAcceptanceRespVO>>`
+
+### DeltaOrderAcceptanceRespVO 字段
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 验收记录 ID |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `acceptanceResult` | `Integer` | 否 | 验收结果：1-验收通过 2-要求返工 |
+| `acceptanceResultName` | `String` | 否 | 验收结果名称（如"验收通过"） |
+| `operatorType` | `Integer` | 否 | 操作人类型：1-客户 2-打手 3-客服 4-系统 |
+| `operatorTypeName` | `String` | 否 | 操作人类型名称（如"客户"、"客服"） |
+| `operatorName` | `String` | 是 | 操作人名称 |
+| `remark` | `String` | 是 | 备注 |
+| `beforeStatus` | `Integer` | 否 | 操作前状态 |
+| `afterStatus` | `Integer` | 否 | 操作后状态 |
+| `acceptanceTime` | `LocalDateTime` | 否 | 验收时间 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+
+### 排序规则
+
+- `acceptanceTime` **降序**排列（最新在前）
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": [
+    {
+      "id": 1,
+      "serviceOrderId": 100,
+      "acceptanceResult": 1,
+      "acceptanceResultName": "验收通过",
+      "operatorType": 3,
+      "operatorTypeName": "客服",
+      "operatorName": "管理员100",
+      "remark": "后台审核凭证通过",
+      "beforeStatus": 60,
+      "afterStatus": 80,
+      "acceptanceTime": "2023-06-01T16:00:00",
+      "createTime": "2023-06-01T16:00:00"
+    }
+  ]
+}
+```
+
+---
+
+## 17. 返工记录
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询返工记录 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/service-order/rework-list` |
+| Vue 前端路径 | `/delta/service-order/rework-list` |
+| 权限编码 | `delta:service-order:query` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `serviceOrderId` | `Long` | 是 | 服务订单 ID |
+
+### 响应
+
+返回类型：`CommonResult<List<DeltaOrderReworkRespVO>>`
+
+### DeltaOrderReworkRespVO 字段
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 返工记录 ID |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `reworkNo` | `Integer` | 否 | 返工序号（第几次返工，从 1 开始） |
+| `reason` | `String` | 否 | 返工原因 |
+| `operatorType` | `Integer` | 否 | 操作人类型：1-客户 2-打手 3-客服 4-系统 |
+| `operatorTypeName` | `String` | 否 | 操作人类型名称 |
+| `operatorName` | `String` | 是 | 操作人名称 |
+| `beforeStatus` | `Integer` | 否 | 操作前状态 |
+| `afterStatus` | `Integer` | 否 | 操作后状态 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+
+### 排序规则
+
+- `createTime` **降序**排列（最新在前）
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": [
+    {
+      "id": 1,
+      "serviceOrderId": 100,
+      "reworkNo": 1,
+      "reason": "完成凭证不完整，请重新提交",
+      "operatorType": 3,
+      "operatorTypeName": "客服",
+      "operatorName": "管理员100",
+      "beforeStatus": 60,
+      "afterStatus": 50,
+      "createTime": "2023-06-01T15:30:00"
+    }
+  ]
+}
+```
+
+---
+
+## 18. 可派单打手查询
+
+### 结论
+
+**当前后端没有订单级可派单打手匹配接口。**
+
+详细说明：
+
+- 未找到 `matched-worker-page`、`available-worker-page`、`candidate-worker-page` 等接口
+- 未找到任何 `WorkerMatch` 或 `MatchWorker` 相关的 Controller
+- `/delta/worker/page` 是打手管理分页接口（在 `DeltaWorkerController` 中），不能视为订单匹配接口
+- 技能匹配规则（`hasMatchingSkill(workerId, deviceType, serviceType)`）内嵌在派单/接单流程中，不单独暴露为查询 API
+
+**可选方案**：
+
+1. 前端在派单弹框中先调用 `/delta/worker/page` 获取打手列表，自行按 `deviceType` + `serviceType` 过滤
+2. 技术约束：无法在服务端过滤打手在线状态/容量/技能匹配，需前端理解和承担风险
+
+---
+
+## 19. 权限编码
+
+**源文件**：各 Controller 的 `@PreAuthorize` 注解
+
+| 权限编码 | 用途 | 应用接口 |
+|----------|------|----------|
+| `delta:service-order:query` | 查询服务订单 | page, get, progress-list, evidence-list, timeline, acceptance-list, rework-list |
+| `delta:service-order:confirm` | 确认服务单 | confirm |
+| `delta:service-order:dispatch` | 人工派单 | dispatch |
+| `delta:service-order:reassign` | 改派打手 | reassign |
+| `delta:service-order:return-pool` | 退回订单池 | return-pool |
+| `delta:service-order:accept` | 验收通过 | accept |
+| `delta:service-order:rework` | 要求返工 | request-rework |
+
+### 其他模块权限编码
+
+| 权限编码 | 用途 |
+|----------|------|
+| `delta:after-sale:query` | 查询售后案件 |
+| `delta:after-sale:accept` | 受理售后 |
+| `delta:after-sale:reject` | 驳回售后 |
+| `delta:after-sale:arbitrate` | 仲裁售后 |
+| `delta:after-sale:close` | 关闭售后案件 |
+| `delta:order-cancel:query` | 查询取消申请 |
+| `delta:order-cancel:approve` | 批准取消 |
+| `delta:order-cancel:reject` | 驳回取消 |
+
+---
+
+## 20. 错误码
+
+**源文件**：`ErrorCodeConstants.java`
+
+### 服务订单相关（1-020-005-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020005000` | `SERVICE_ORDER_NOT_EXISTS` | 服务订单不存在 |
+| `1020005001` | `SERVICE_ORDER_ALREADY_EXISTS` | 服务订单已存在（重复创建） |
+| `1020005002` | `SERVICE_ORDER_STATUS_INVALID` | 服务订单状态不允许此操作 |
+| `1020005003` | `SERVICE_ORDER_ALREADY_CLAIMED` | 服务订单已被其他打手接走 |
+| `1020005004` | `SERVICE_ORDER_NOT_BELONG_TO_WORKER` | 该订单不属于当前打手 |
+| `1020005005` | `SERVICE_ORDER_NOT_BELONG_TO_USER` | 服务订单不属于当前会员 |
+| `1020005006` | `SERVICE_ORDER_NO_GENERATE_FAILED` | 服务订单号生成失败 |
+
+### 派单相关（1-020-006-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020006000` | `ASSIGNMENT_WORKER_NOT_AVAILABLE` | 指定打手不可用 |
+| `1020006001` | `ASSIGNMENT_ALREADY_EXISTS` | 已有有效派单记录 |
+| `1020006002` | `ASSIGNMENT_NOT_FOUND` | 分配记录不存在 |
+| `1020006003` | `ASSIGNMENT_WORKER_NOT_ONLINE` | 打手不在线 |
+| `1020006004` | `ASSIGNMENT_WORKER_BUSY` | 打手已忙碌 |
+| `1020006005` | `ASSIGNMENT_WORKER_PAUSED` | 打手已暂停接单 |
+| `1020006006` | `ASSIGNMENT_WORKER_SKILL_NOT_MATCH` | 打手技能不匹配 |
+| `1020006007` | `ASSIGNMENT_WORKER_HAS_ACTIVE_ORDER` | 打手已有进行中订单 |
+| `1020006008` | `ASSIGNMENT_ORDER_ALREADY_STARTED` | 订单已开始服务，不能改派或退回 |
+| `1020006009` | `ASSIGNMENT_REASON_REQUIRED` | 操作原因不能为空 |
+| `1020006010` | `ASSIGNMENT_ORDER_ALREADY_CONFIRMED` | 订单已确认，请勿重复操作 |
+| `1020006011` | `ASSIGNMENT_ORDER_BEING_PROCESSED` | 订单正在处理中，请稍后重试 |
+| `1020006012` | `ASSIGNMENT_CROSS_TENANT` | 跨租户操作被拒绝 |
+| `1020006013` | `ASSIGNMENT_NO_WORKER_IDENTITY` | 当前会员不是打手 |
+
+### Phase 6 验收与返工（1-020-011-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020011000` | `SERVICE_ORDER_STATUS_CANNOT_ACCEPT` | 服务单状态不允许验收 |
+| `1020011001` | `SERVICE_ORDER_STATUS_CANNOT_REWORK` | 服务单状态不允许返工 |
+| `1020011002` | `SERVICE_ORDER_ALREADY_ACCEPTED` | 服务单已经验收通过 |
+| `1020011003` | `SERVICE_ORDER_ALREADY_REWORKED` | 服务单已经要求返工 |
+| `1020011004` | `ACCEPTANCE_REMARK_TOO_LONG` | 验收备注过长 |
+| `1020011005` | `REWORK_REASON_EMPTY` | 返工原因不能为空 |
+| `1020011006` | `REWORK_REASON_TOO_LONG` | 返工原因过长 |
+| `1020011007` | `REWORK_COUNT_EXCEED` | 返工次数超过限制（最大 3 次） |
+| `1020011008` | `ACCEPTANCE_NO_VALID_ASSIGNMENT` | 服务单没有有效分配记录 |
+| `1020011009` | `ACCEPTANCE_RECORD_ALREADY_EXISTS` | 验收记录已经存在 |
+| `1020011010` | `CROSS_TENANT_ACCESS_DENIED` | 跨租户访问被拒绝 |
+
+---
+
+## 21. 并发和幂等规则
+
+### 并发控制矩阵
+
+| 接口 | 并发控制方式 | 锁粒度 | 冲突处理 |
+|------|-------------|--------|----------|
+| confirm | CAS 乐观锁 | 单行（id） | `SERVICE_ORDER_STATUS_INVALID` |
+| dispatch | CAS 乐观锁 | 单行（serviceOrderId） | `ASSIGNMENT_ORDER_BEING_PROCESSED` |
+| reassign | CAS 乐观锁 | 单行（serviceOrderId） | `ASSIGNMENT_ORDER_BEING_PROCESSED` |
+| return-pool | CAS 乐观锁 | 单行（serviceOrderId） | `ASSIGNMENT_ORDER_BEING_PROCESSED` |
+| accept | **Redisson 分布式锁** + CAS 乐观锁 | `tenantId + serviceOrderId` | `SERVICE_ORDER_STATUS_CHANGED` |
+| request-rework | **Redisson 分布式锁** + CAS 乐观锁 | `tenantId + serviceOrderId` | `SERVICE_ORDER_STATUS_CHANGED` |
+
+### 乐观锁机制
+
+- `DeltaServiceOrderDO.version` 字段：在 `updateStatusCas` 方法中隐式使用
+- CAS 更新条件：`WHERE id = ? AND status = oldStatus`
+
+### 分布式锁机制
+
+- 使用 `DeltaServiceOrderLockRedisDAO.lockAndRun(tenantId, serviceOrderId, ...)` 
+- 锁内通过独立 Bean 调用 `@Transactional` 方法，确保 Spring AOP 代理生效
+
+### 幂等规则
+
+| 接口 | 幂等性 |
+|------|--------|
+| confirm | **不幂等**：重复调用会因 CAS 失败返回 `SERVICE_ORDER_STATUS_INVALID` |
+| dispatch | **不幂等**：重复调用会因已有分配记录返回 `ASSIGNMENT_ALREADY_EXISTS` |
+| reassign | **不幂等**：CAS 同状态更新，但会创建新分配记录 |
+| return-pool | **不幂等**：重复调用会因 CAS 失败返回 `ASSIGNMENT_ORDER_BEING_PROCESSED` |
+| accept | **不幂等**：重复调用会返回 `SERVICE_ORDER_ALREADY_ACCEPTED` |
+| request-rework | **不幂等**：重复调用会因 CAS 失败或次数超限返回错误 |
+
+---
+
+## 22. 后端尚未提供的内容
+
+| 内容 | 说明 |
+|------|------|
+| 订单级可派单打手匹配接口 | 当前后端未提供（见 18 节） |
+| 订单分页响应的 `workerId`/`workerNickname` 等打手信息字段 | 分页 VO 未包含打手信息 |
+| 订单响应的 `productPicUrl` | DO 有但 Admin VO 未映射 |
+| 派单的截止时间字段 | 未在 `DeltaServiceOrderDispatchReqVO` 中包含 |
+| 派单的通知选项字段 | 未在 ReqVO 中包含 |
+| 派单的幂等键字段 | 未在 ReqVO 中包含 |
+| 进度/凭证的批操作接口 | 当前不支持批量操作 |
+| 协议状态变更的批量接口 | 不支持 |
+| WebSocket 实时推送 | 当前后端未提供（使用 Outbox 事件+轮询） |
+
+---
+
+## 23. Vue3 对接注意事项
+
+### URL 前缀
+
+```typescript
+// ✅ 正确写法
+const url = '/delta/service-order/page';
+
+// ❌ 错误写法（会导致 `/admin-api/admin-api/delta/service-order/page`）
+const url = '/admin-api/delta/service-order/page';
+```
+
+Axios 已在 `request.ts` 或 `.env` 中配置 `VITE_APP_BASE_API = '/admin-api'`，自动拼接。
+
+### 数据类型
+
+| 项 | 类型 |
+|----|------|
+| ID 字段 | `number`（后端 Java `Long`，JSON 序列化为数字） |
+| 状态值 | `number`（后端 `Integer`） |
+| 金额字段 | `number`（后端 `Integer`，单位：**分**） |
+| 时间字段 | `string`（后端 `LocalDateTime`，JSON 序列化为 ISO 字符串） |
+| 枚举值类型 | `number`（不是 string） |
+| 图片字段 | 可能是 `string` 或 `string[]`。`imageUrls` 为 JSON 数组 |
+| 是否必填 | 通过 `@NotNull` / `@NotBlank` 注解判断 |
+
+### 分页结构
+
+```typescript
+interface PageResult<T> {
+  total: number;  // 总条数
+  list: T[];      // 数据列表
+}
+```
+
+### 成功响应结构
+
+```typescript
+interface CommonResult<T> {
+  code: number;  // 0 表示成功
+  msg: string;   // "成功"
+  data: T;       // 业务数据
+}
+```
+
+### 错误响应结构
+
+```typescript
+interface CommonResult<T> {
+  code: number;  // 业务错误码（如 1020005000）
+  msg: string;   // 错误描述（如 "服务订单不存在"）
+  data: null;
+}
+```
+
+### 枚举值映射表
+
+**服务类型 (serviceType)**：
+| 值 | 名称 |
+|----|------|
+| 1 | 陪玩 |
+| 2 | 护航 |
+| 3 | 趣味单 |
+
+**设备类型 (deviceType)**：
+| 值 | 名称 |
+|----|------|
+| 1 | 手机 |
+| 2 | 平板 |
+| 3 | PC |
+
+**派单方式 (dispatchMode)**：
+| 值 | 名称 |
+|----|------|
+| 1 | 客户指定 |
+| 2 | 客服派单 |
+| 3 | 接单大厅 |
+
+**操作人类型 (operatorType)**：
+| 值 | 名称 |
+|----|------|
+| 1 | 客户 |
+| 2 | 打手 |
+| 3 | 客服 |
+| 4 | 系统 |
+
+**凭证类型 (evidenceType)**：
+| 值 | 名称 |
+|----|------|
+| 1 | 截图 |
+| 2 | 视频 |
+| 3 | 文字说明 |
+| 4 | 文件 |
+
+**进度类型 (progressType)**：
+| 值 | 名称 |
+|----|------|
+| 1 | 开始服务 |
+| 2 | 进度更新 |
+| 3 | 异常报告 |
+| 4 | 提交完成 |
+| 5 | 要求返工 |
+| 6 | 验收通过 |
+
+**验收结果 (acceptanceResult)**：
+| 值 | 名称 |
+|----|------|
+| 1 | 验收通过 |
+| 2 | 要求返工 |
+
+### 金额显示
+
+所有金额字段单位为**分**，前端显示时需除以 100：
+
+```typescript
+function formatPrice(amount: number): string {
+  return (amount / 100).toFixed(2);
+}
+```
+
+### 注意事项
+
+1. **Admin vs App 差异**：`progress-list` 和 `evidence-list` 在 Admin 端直接返回 DO 对象，在 App 端返回 VO 对象（含类型名称等）
+2. **时间线 operatorType**：Admin 端会暴露 `ADMIN` 类型，App 端不暴露
+3. **状态判断**：不要使用枚举字符串（如 `"PENDING_DISPATCH"`），后端返回的是数字值（如 `10`）
+4. **confirm 接口的 id 字段**：与其他操作接口不同，confirm 使用的是 `id`，不是 `serviceOrderId`
+
+---
+
+## 24. 打手结算模块说明
+
+**源文件**：`DeltaWorkerSettlementController.java`、`DeltaWorkerSettlementPhase7CoreService.java`、`DeltaWorkerSettlementService.java`
+
+| 项 | 值 |
+|---|---|
+| Controller 类名 | `DeltaWorkerSettlementController` |
+| `@RequestMapping` | `/delta/worker-settlement` |
+| 完整后端路径前缀 | `/admin-api/delta/worker-settlement` |
+| Vue 前端应使用路径前缀 | `/delta/worker-settlement` |
+| 模块中文名 | 打手结算管理（Phase 7 审核流程） |
+
+### 模块说明
+
+本模块管理打手服务完成后的结算审核和打款流程。结算单在服务单验收通过后自动生成（见第 11 节），也可后台人工补生成。
+
+### 结算金额计算规则
+
+- **服务金额**：取服务订单的 `serviceAmount`（单位：分）
+- **抽成比例**：**万分制**，来自服务单快照（`order.commissionRate`）或打手表（`worker.commissionRate`）。例如 `1500` 表示 15.00%
+- **平台抽成** = `serviceAmount × commissionRate / 10000`，**四舍五入到分**
+- **打手收入** = `serviceAmount − platformFee`
+- 重新提交审核时允许修改抽成比例并重新计算金额
+
+---
+
+## 25. 打手结算状态枚举
+
+**源文件**：`SettlementStatusEnum.java`
+
+| 状态值 | 枚举常量 | 中文名称 | 是否终态 | 说明 |
+|--------|----------|----------|----------|------|
+| `0` | `PENDING_REVIEW` | 待审核 | 否 | 验收完成后自动生成时为此状态 |
+| `1` | `APPROVED` | 审核通过 | 否 | 审核通过后等待打款 |
+| `2` | `REJECTED` | 审核驳回 | 否 | 可重新提交审核（resubmit） |
+| `3` | `PAID` | 已打款 | **是** | 后台人工确认打款后的终态 |
+| `4` | `CANCELED` | 已取消 | **是** | 因订单取消/退款等联动取消的终态 |
+
+---
+
+## 26. 打手结算状态矩阵
+
+**源文件**：`DeltaWorkerSettlementPhase7CoreService.java` + `SettlementStatusEnum.java`
+
+| 当前状态 | approve | reject | resubmit | markPaid | revokePaid |
+|----------|---------|--------|----------|----------|------------|
+| 0 (待审核) | **允许** →1 | **允许** →2 | 不允许 | 不允许 | 不允许 |
+| 1 (审核通过) | 不允许 | 不允许 | 不允许 | **允许** →3 | 不允许 |
+| 2 (审核驳回) | 不允许 | 不允许 | **允许** →0 | 不允许 | 不允许 |
+| 3 (已打款) | 不允许 | 不允许 | 不允许 | 不允许 | **允许** →1 |
+| 4 (已取消) | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+
+### 操作类型枚举
+
+**源文件**：`SettlementOperationTypeEnum.java`
+
+| 枚举常量 | 中文名称 |
+|----------|----------|
+| `GENERATE` | 生成结算 |
+| `APPROVE` | 审核通过 |
+| `REJECT` | 审核驳回 |
+| `RESUBMIT` | 重新提交审核 |
+| `MARK_PAID` | 标记已打款 |
+| `REVOKE_PAID` | 撤销打款 |
+
+---
+
+## 27. 打手结算分页
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 后台分页查询结算列表 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/worker-settlement/page` |
+| Vue 前端路径 | `/delta/worker-settlement/page` |
+| 权限编码 | `delta:worker-settlement:query` |
+| ReqVO | `DeltaWorkerSettlementPageReqVO`（继承 `PageParam`） |
+| RespVO | `CommonResult<PageResult<DeltaWorkerSettlementRespVO>>` |
+
+### Query 参数
+
+**源文件**：`DeltaWorkerSettlementPageReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `pageNo` | `Long` | 否 | PageParam 默认值 | 页码，从 1 开始 |
+| `pageSize` | `Long` | 否 | PageParam 默认值 | 每页条数 |
+| `settlementNo` | `String` | 否 | 无 | 结算单号 |
+| `serviceOrderId` | `Long` | 否 | 无 | 服务订单 ID |
+| `workerId` | `Long` | 否 | 无 | 打手 ID |
+| `status` | `Integer` | 否 | 无 | 结算状态 |
+| `createTime` | `LocalDateTime[]` | 否 | 无 | 创建时间范围（2 个元素） |
+
+### 响应字段
+
+**源文件**：`DeltaWorkerSettlementRespVO.java`
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 结算 ID |
+| `settlementNo` | `String` | 否 | 结算单号 |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `serviceOrderNo` | `String` | 否 | 服务订单号 |
+| `workerId` | `Long` | 否 | 打手 ID |
+| `workerName` | `String` | 是（Controller 拼接） | 打手名称（取自 displayName 或 "打手{id}"） |
+| `serviceAmount` | `Integer` | 否 | 服务金额（**单位：分**） |
+| `commissionRate` | `Integer` | 否 | 抽成比例（**万分制**，如 1500 = 15.00%） |
+| `platformFee` | `Integer` | 否 | 平台抽成金额（**单位：分**） |
+| `workerAmount` | `Integer` | 否 | 打手收入金额（**单位：分**） |
+| `settlementStatus` | `Integer` | 否 | 结算状态（见第 25 节） |
+| `settlementStatusName` | `String` | 否 | 结算状态名称（如"待审核"） |
+| `reviewTime` | `LocalDateTime` | 是 | 审核时间 |
+| `paidTime` | `LocalDateTime` | 是 | 打款时间 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+
+### 不存在的字段（确认后端未提供）
+
+| 字段名 | 说明 |
+|--------|------|
+| `workerNo` | 不存在 |
+| `settlementAmount` | 不存在（使用 `workerAmount` 表示打手收入） |
+| `workerIncome` | 不存在（同 `workerAmount`） |
+| `failureReason` | 不存在（驳回原因仅在详情接口） |
+| `processTime` | 不存在 |
+| `completedTime` | 不存在 |
+| `tradeOrderId` | 不存在 |
+| `tradeOrderNo` | 不存在 |
+| `updateTime` | 列表接口不返回 |
+
+### 排序规则
+
+- 按 `id` **降序**排列（最新在前）
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": {
+    "total": 100,
+    "list": [
+      {
+        "id": 1,
+        "settlementNo": "DSU202606220001",
+        "serviceOrderId": 100,
+        "serviceOrderNo": "DSO202606010001",
+        "workerId": 10,
+        "workerName": "张三",
+        "serviceAmount": 10000,
+        "commissionRate": 1500,
+        "platformFee": 1500,
+        "workerAmount": 8500,
+        "settlementStatus": 0,
+        "settlementStatusName": "待审核",
+        "reviewTime": null,
+        "paidTime": null,
+        "createTime": "2026-06-22T10:00:00"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 28. 打手结算详情
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 后台查询结算详情 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/worker-settlement/get` |
+| Vue 前端路径 | `/delta/worker-settlement/get` |
+| 权限编码 | `delta:worker-settlement:query` |
+| RespVO | `CommonResult<DeltaWorkerSettlementDetailRespVO>` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 结算 ID |
+
+### 响应字段
+
+**源文件**：`DeltaWorkerSettlementDetailRespVO.java`
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 结算 ID |
+| `settlementNo` | `String` | 否 | 结算单号 |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `serviceOrderNo` | `String` | 否 | 服务订单号 |
+| `workerId` | `Long` | 否 | 打手 ID |
+| `workerName` | `String` | 是（Controller 拼接） | 打手名称 |
+| `serviceAmount` | `Integer` | 否 | 服务金额（**单位：分**） |
+| `commissionRate` | `Integer` | 否 | 抽成比例（**万分制**） |
+| `platformFee` | `Integer` | 否 | 平台抽成金额（**单位：分**） |
+| `workerAmount` | `Integer` | 否 | 打手收入金额（**单位：分**） |
+| `settlementStatus` | `Integer` | 否 | 结算状态 |
+| `settlementStatusName` | `String` | 否 | 结算状态名称 |
+| `settledAt` | `LocalDateTime` | 是 | 结算完成时间（验收时间） |
+| `reviewerId` | `Long` | 是 | 审核人 ID |
+| `reviewTime` | `LocalDateTime` | 是 | 审核时间 |
+| `rejectReason` | `String` | 是 | 驳回原因 |
+| `payerId` | `Long` | 是 | 打款人 ID |
+| `paidTime` | `LocalDateTime` | 是 | 打款时间 |
+| `payMethod` | `Integer` | 是 | 打款方式 |
+| `payReference` | `String` | 是 | 打款参考号（人工转账流水号） |
+| `payRemark` | `String` | 是 | 打款备注 |
+| `remark` | `String` | 是 | 备注 |
+| `logs` | `List<SettlementLogItem>` | 否 | 结算操作日志列表 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+
+### SettlementLogItem 字段
+
+| 字段名 | Java 类型 | 含义 |
+|--------|-----------|------|
+| `operationType` | `String` | 操作类型（GENERATE/APPROVE/REJECT/RESUBMIT/MARK_PAID/REVOKE_PAID） |
+| `beforeStatus` | `Integer` | 操作前状态 |
+| `afterStatus` | `Integer` | 操作后状态 |
+| `operatorType` | `Integer` | 操作人类型：1-会员 3-管理员 4-系统 |
+| `operatorId` | `Long` | 操作人 ID |
+| `content` | `String` | 操作内容 |
+| `amountSnapshot` | `String` | 金额快照 JSON |
+| `createTime` | `LocalDateTime` | 操作时间 |
+
+### 不存在的字段（确认后端未提供）
+
+| 字段名 | 说明 |
+|--------|------|
+| `tradeOrderId` | 不存在 |
+| `tradeOrderNo` | 不存在 |
+| `workerNo` | 不存在 |
+| `failureReason` | 不存在（驳回原因字段名为 `rejectReason`） |
+| `processTime` | 不存在 |
+| `completedTime` | 不存在 |
+| `updateTime` | 不存在 |
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": {
+    "id": 1,
+    "settlementNo": "DSU202606220001",
+    "serviceOrderId": 100,
+    "serviceOrderNo": "DSO202606010001",
+    "workerId": 10,
+    "workerName": "张三",
+    "serviceAmount": 10000,
+    "commissionRate": 1500,
+    "platformFee": 1500,
+    "workerAmount": 8500,
+    "settlementStatus": 0,
+    "settlementStatusName": "待审核",
+    "settledAt": "2026-06-22T10:00:00",
+    "reviewerId": null,
+    "reviewTime": null,
+    "rejectReason": null,
+    "payerId": null,
+    "paidTime": null,
+    "payMethod": null,
+    "payReference": null,
+    "payRemark": null,
+    "remark": null,
+    "logs": [
+      {
+        "operationType": "GENERATE",
+        "beforeStatus": null,
+        "afterStatus": 0,
+        "operatorType": 4,
+        "operatorId": 0,
+        "content": "生成结算，金额=10000分，抽成比例=1500（万分制），平台抽成=1500分，打手收入=8500分",
+        "amountSnapshot": "{\"serviceAmount\":10000,\"commissionRate\":1500,\"platformFee\":1500,\"workerAmount\":8500}",
+        "createTime": "2026-06-22T10:00:00"
+      }
+    ],
+    "createTime": "2026-06-22T10:00:00"
+  }
+}
+```
+
+---
+
+## 29. 打手结算管理操作
+
+### 29.1 补生成结算
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 后台人工补生成结算 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/worker-settlement/generate` |
+| Vue 前端路径 | `/delta/worker-settlement/generate` |
+| 权限编码 | `delta:worker-settlement:generate` |
+| ReqVO | `DeltaWorkerSettlementGenerateReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `serviceOrderId` | `Long` | **是** | `@NotNull` | 服务订单 ID |
+
+#### 业务规则
+
+1. 服务单必须已完成（`isCompleted`），否则抛出 `SETTLEMENT_SERVICE_ORDER_NOT_COMPLETED`（1_020_008_003）
+2. 幂等：已存在同一服务订单的结算记录时，**直接返回已有记录**（不报错）
+3. 必须找到有效打手（`assignedWorkerId != null`），否则抛出 `SETTLEMENT_NO_VALID_WORKER`（1_020_008_004）
+4. 抽成比例优先从服务单快照（`order.commissionRate`）读取，其次从打手表读取，都未配置则抛出 `SETTLEMENT_COMMISSION_RATE_NOT_CONFIGURED`（1_020_008_005）
+5. 创建后状态：**0（待审核）**
+6. 自动记录操作日志（`operationType=GENERATE`）
+
+#### 并发规则
+
+- **无分布式锁**
+- 通过 `DuplicateKeyException` 捕获唯一键冲突实现幂等
+
+#### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+### 29.2 审核通过
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 审核通过 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/worker-settlement/approve` |
+| Vue 前端路径 | `/delta/worker-settlement/approve` |
+| 权限编码 | `delta:worker-settlement:approve` |
+| ReqVO | `DeltaWorkerSettlementApproveReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 结算 ID |
+| `remark` | `String` | 否 | 无 | 审核备注 |
+
+#### 业务规则
+
+1. 当前状态必须是 `0`（待审核），否则抛出 `SETTLEMENT_CANNOT_APPROVE`（1_020_008_008）
+2. **操作后目标状态**：`1`（审核通过）
+3. 记录 `reviewerId`、`reviewTime`、`remark`
+4. 自动写入结算操作日志
+5. Phase 10：发布结算通过事件 → 通知打手
+
+#### 并发规则
+
+- 使用 **CAS 乐观锁**（`updateStatusCas`）
+- 条件：`WHERE id = ? AND settlementStatus = oldStatus`
+- CAS 失败抛出 `SETTLEMENT_STATUS_CHANGED`（1_020_008_016）
+
+#### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+### 29.3 审核驳回
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 审核驳回 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/worker-settlement/reject` |
+| Vue 前端路径 | `/delta/worker-settlement/reject` |
+| 权限编码 | `delta:worker-settlement:reject` |
+| ReqVO | `DeltaWorkerSettlementRejectReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 结算 ID |
+| `reason` | `String` | **是** | `@NotBlank` | 驳回原因 |
+
+#### 业务规则
+
+1. 驳回原因不能为空（前后端均校验，后端 `SETTLEMENT_REJECT_REASON_EMPTY`，1_020_008_013）
+2. 当前状态必须是 `0`（待审核），否则抛出 `SETTLEMENT_CANNOT_REJECT`（1_020_008_009）
+3. **操作后目标状态**：`2`（审核驳回）
+4. 记录 `reviewerId`、`reviewTime`、`rejectReason`
+5. Phase 10：发布结算驳回事件 → 通知打手
+
+#### 并发规则
+
+- 使用 **CAS 乐观锁**（`updateStatusCas`）
+- CAS 失败抛出 `SETTLEMENT_STATUS_CHANGED`（1_020_008_016）
+
+#### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+### 29.4 重新提交审核
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 重新提交审核 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/worker-settlement/resubmit` |
+| Vue 前端路径 | `/delta/worker-settlement/resubmit` |
+| 权限编码 | `delta:worker-settlement:approve`（与审核通过共用） |
+| ReqVO | `DeltaWorkerSettlementResubmitReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 结算 ID |
+| `commissionRate` | `Integer` | 否 | 无 | 抽成比例（万分制），可为 null 表示不修改 |
+| `remark` | `String` | 否 | 无 | 备注 |
+
+#### 业务规则
+
+1. 当前状态必须是 `2`（审核驳回），否则抛出 `SETTLEMENT_CANNOT_RESUBMIT`（1_020_008_010）
+2. 允许修改抽成比例：传入 `null` 则保持原比例；传入新值则要求 0 ≤ commissionRate ≤ 10000，否则抛出 `SETTLEMENT_COMMISSION_RATE_INVALID`（1_020_008_006）
+3. 重新计算金额（四舍五入到分）
+4. **操作后目标状态**：`0`（待审核）
+5. 清除驳回相关字段（`rejectReason`、`reviewerId`、`reviewTime`）
+6. 自动写入结算操作日志（含金额快照 JSON）
+
+#### 并发规则
+
+- 使用 **CAS 乐观锁**（`updateStatusCas`）
+- CAS 失败抛出 `SETTLEMENT_STATUS_CHANGED`（1_020_008_016）
+
+#### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+### 29.5 标记已打款
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 标记已打款 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/worker-settlement/mark-paid` |
+| Vue 前端路径 | `/delta/worker-settlement/mark-paid` |
+| 权限编码 | `delta:worker-settlement:pay` |
+| ReqVO | `DeltaWorkerSettlementMarkPaidReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 结算 ID |
+| `paymentMethod` | `Integer` | 否 | 无 | 打款方式 |
+| `paymentReference` | `String` | 否 | 无 | 打款参考号（人工转账流水号） |
+| `remark` | `String` | 否 | 无 | 打款备注 |
+
+#### 业务规则
+
+1. 当前状态必须是 `1`（审核通过），否则抛出 `SETTLEMENT_CANNOT_MARK_PAID`（1_020_008_011）
+2. **操作后目标状态**：`3`（已打款，终态）
+3. 记录 `payerId`、`paidTime`、`payMethod`、`payReference`、`payRemark`
+4. Phase 10：发布结算已打款事件 → 通知打手
+
+#### 并发规则
+
+- 使用 **CAS 乐观锁**（`updateStatusCas`）
+- CAS 失败抛出 `SETTLEMENT_STATUS_CHANGED`（1_020_008_016）
+
+#### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+### 29.6 撤销打款标记
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 撤销打款标记 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/worker-settlement/revoke-paid` |
+| Vue 前端路径 | `/delta/worker-settlement/revoke-paid` |
+| 权限编码 | `delta:worker-settlement:pay`（与标记已打款共用） |
+| ReqVO | `DeltaWorkerSettlementRevokePaidReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 结算 ID |
+| `reason` | `String` | **是** | `@NotBlank` | 撤销原因 |
+
+#### 业务规则
+
+1. 撤销原因不能为空（后端 `SETTLEMENT_REVOKE_REASON_EMPTY`，1_020_008_014）
+2. 当前状态必须是 `3`（已打款），否则抛出 `SETTLEMENT_CANNOT_REVOKE_PAID`（1_020_008_012）
+3. **操作后目标状态**：`1`（审核通过）
+4. 清除打款相关字段（`payerId`、`paidTime`、`payMethod`、`payReference`、`payRemark`）
+5. 自动写入结算操作日志
+
+#### 并发规则
+
+- 使用 **CAS 乐观锁**（`updateStatusCas`）
+- CAS 失败抛出 `SETTLEMENT_STATUS_CHANGED`（1_020_008_016）
+
+#### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 30. 打手结算错误码
+
+**源文件**：`ErrorCodeConstants.java`
+
+### 结算核心（1-020-008-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020008000` | `SETTLEMENT_NOT_EXISTS` | 结算记录不存在 |
+| `1020008001` | `SETTLEMENT_ALREADY_EXISTS` | 结算记录已存在（唯一键冲突） |
+| `1020008002` | `SETTLEMENT_STATUS_INVALID` | 结算状态不允许此操作 |
+| `1020008003` | `SETTLEMENT_SERVICE_ORDER_NOT_COMPLETED` | 服务单尚未完成，不能生成结算 |
+| `1020008004` | `SETTLEMENT_NO_VALID_WORKER` | 服务单没有有效打手 |
+| `1020008005` | `SETTLEMENT_COMMISSION_RATE_NOT_CONFIGURED` | 抽成比例未配置 |
+| `1020008006` | `SETTLEMENT_COMMISSION_RATE_INVALID` | 抽成比例不合法（< 0 或 > 10000） |
+| `1020008007` | `SETTLEMENT_AMOUNT_CALCULATE_FAILED` | 结算金额计算失败（服务金额 ≤ 0） |
+| `1020008008` | `SETTLEMENT_CANNOT_APPROVE` | 结算状态不允许审核通过（仅待审核可操作） |
+| `1020008009` | `SETTLEMENT_CANNOT_REJECT` | 结算状态不允许审核驳回（仅待审核可操作） |
+| `1020008010` | `SETTLEMENT_CANNOT_RESUBMIT` | 结算状态不允许重新提交（仅已驳回可操作） |
+| `1020008011` | `SETTLEMENT_CANNOT_MARK_PAID` | 结算状态不允许标记已打款（仅审核通过可操作） |
+| `1020008012` | `SETTLEMENT_CANNOT_REVOKE_PAID` | 结算状态不允许撤销打款（仅已打款可操作） |
+| `1020008013` | `SETTLEMENT_REJECT_REASON_EMPTY` | 审核驳回原因不能为空 |
+| `1020008014` | `SETTLEMENT_REVOKE_REASON_EMPTY` | 撤销打款原因不能为空 |
+| `1020008015` | `SETTLEMENT_REMARK_TOO_LONG` | 备注过长 |
+| `1020008016` | `SETTLEMENT_STATUS_CHANGED` | 结算状态已变化，请刷新后重试（CAS 冲突） |
+| `1020008017` | `SETTLEMENT_CROSS_TENANT` | 跨租户操作被拒绝 |
+| `1020008018` | `SETTLEMENT_NOT_BELONG_TO_WORKER` | 无权查看该结算 |
+
+### 结算联动（1-020-016-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020016000` | `SETTLEMENT_PAID_NEED_MANUAL_RECOVERY` | 已打款结算需要人工追回，不能自动取消（Phase 8 联动） |
+
+---
+
+## 31. 打手结算并发和幂等规则
+
+### 并发控制矩阵
+
+| 接口 | 并发控制方式 | 锁粒度 | 冲突处理 |
+|------|-------------|--------|----------|
+| generate | `DuplicateKeyException` 异常捕获 | 数据库唯一键 | `SETTLEMENT_ALREADY_EXISTS` |
+| approve | CAS 乐观锁 | 单行（id + oldStatus） | `SETTLEMENT_STATUS_CHANGED` |
+| reject | CAS 乐观锁 | 单行（id + oldStatus） | `SETTLEMENT_STATUS_CHANGED` |
+| resubmit | CAS 乐观锁 | 单行（id + oldStatus） | `SETTLEMENT_STATUS_CHANGED` |
+| mark-paid | CAS 乐观锁 | 单行（id + oldStatus） | `SETTLEMENT_STATUS_CHANGED` |
+| revoke-paid | CAS 乐观锁 | 单行（id + oldStatus） | `SETTLEMENT_STATUS_CHANGED` |
+
+### CAS 机制
+
+- 通过 `DeltaWorkerSettlementMapper.updateStatusCas(id, newStatus, oldStatus, extraUpdater)` 实现
+- 核心 SQL：`WHERE id = ? AND settlement_status = oldStatus`
+- 返回影响行数 != 1 时视为冲突
+
+### 分布式锁
+
+- 结算模块**没有使用 Redisson 分布式锁**。并发控制**完全依赖 CAS 乐观锁**。
+
+### 幂等规则
+
+| 接口 | 幂等性 |
+|------|--------|
+| generate | **幂等**：同一 serviceOrderId 重复调用返回已有记录（不报错） |
+| approve | **不幂等**：重复调用因 CAS 失败（状态已变为 1）抛 `SETTLEMENT_STATUS_CHANGED` |
+| reject | **不幂等**：重复调用因 CAS 失败抛 `SETTLEMENT_STATUS_CHANGED` |
+| resubmit | **不幂等**：重复调用因 CAS 失败抛 `SETTLEMENT_STATUS_CHANGED` |
+| mark-paid | **不幂等**：重复调用因 CAS 失败抛 `SETTLEMENT_STATUS_CHANGED` |
+| revoke-paid | **不幂等**：重复调用因 CAS 失败抛 `SETTLEMENT_STATUS_CHANGED` |
+
+### 多租户
+
+- `DeltaWorkerSettlementDO` 继承 `TenantBaseDO`
+- 查询通过 MyBatis-Plus 自动带 `tenant_id` 过滤（BaseMapperX 框架层处理）
+- `SETTLEMENT_CROSS_TENANT`（1_020_008_017）在 `ErrorCodeConstants` 中定义但未在当前 Admin Controller 中直接使用
+
+### 结算业务边界确认
+
+- **结算单何时生成**：服务单验收通过后自动生成（第 11 节），或后台人工补生成
+- **是否允许重复生成**：否，同一服务单唯一结算（唯一键防重 + generate 接口幂等）
+- **是否与退款联动**：是。取消批准/全额退款时，非 PAID 状态的结算自动取消为 CANCELED；PAID 状态标记需人工追回
+- **打手收入由谁计算**：后端 `DeltaWorkerSettlementPhase7CoreService.doCreateSettlement()` 计算
+- **平台抽成由谁计算**：同上，`commissionRate` 来源于服务单快照或打手表
+- **服务订单取消后如何处理结算**：见下方
+
+### 取消/退款与结算联动规则
+
+**源文件**：`DeltaServiceOrderPhase8CoreService.cancelSettlementIfUnpaid()`
+
+| 结算当前状态 | 取消/退款时处理 |
+|-------------|---------------|
+| 待审核 (0) | **自动取消** → CANCELED (4) |
+| 审核通过 (1) | **自动取消** → CANCELED (4) |
+| 审核驳回 (2) | **自动取消** → CANCELED (4) |
+| 已打款 (3) | **不能自动取消**，标记 `needManualRecovery=true`，抛出 `SETTLEMENT_PAID_NEED_MANUAL_RECOVERY` |
+| 已取消 (4) | 无操作（已是终态） |
+
+---
+
+## 32. 订单取消申请模块说明
+
+**源文件**：`DeltaOrderCancelController.java`、`DeltaServiceOrderPhase8CoreService.java`
+
+| 项 | 值 |
+|---|---|
+| Controller 类名 | `DeltaOrderCancelController` |
+| `@RequestMapping` | `/delta/order-cancel` |
+| 完整后端路径前缀 | `/admin-api/delta/order-cancel` |
+| Vue 前端应使用路径前缀 | `/delta/order-cancel` |
+| 模块中文名 | 订单取消申请管理（Phase 8） |
+
+### 模块说明
+
+买家可在服务开始前申请取消订单，后台管理员审核批准或驳回。批准取消后会联动处理打手释放、结算取消、退款记录创建等。
+
+### 取消申请来源
+
+- **买家 App**：`POST /app-api/delta/service-order/cancel-apply`（买家提交取消申请）
+- **后台**：目前只有审批接口（approve/reject），后台**不能主动创建**取消申请
+
+---
+
+## 33. 订单取消申请状态枚举
+
+**源文件**：`CancelStatusEnum.java`
+
+| 状态值 | 枚举常量 | 中文名称 | 是否终态 | 说明 |
+|--------|----------|----------|----------|------|
+| `0` | `PENDING` | 待审核 | 否 | 买家提交后初始状态 |
+| `1` | `APPROVED` | 已通过 | **是** | 审批通过，已取消服务单 |
+| `2` | `REJECTED` | 已驳回 | **是** | 审批驳回，服务单保持原状 |
+
+### 责任归属类型枚举
+
+**源文件**：`ResponsibilityTypeEnum.java`
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `0` | `BUYER` | 买家责任 |
+| `1` | `WORKER` | 打手责任 |
+| `2` | `PLATFORM` | 平台责任 |
+| `3` | `SHARED` | 共同责任 |
+| `4` | `NONE` | 无责任 |
+
+---
+
+## 34. 订单取消申请状态矩阵
+
+**源文件**：`DeltaServiceOrderPhase8CoreService.java`
+
+| 当前状态 | approve | reject |
+|----------|---------|--------|
+| 0 (待审核) | **允许** → 1 | **允许** → 2 |
+| 1 (已通过) | 不允许 | 不允许 |
+| 2 (已驳回) | 不允许 | 不允许 |
+
+---
+
+## 35. 订单取消申请分页
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 分页查询取消申请 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/order-cancel/page` |
+| Vue 前端路径 | `/delta/order-cancel/page` |
+| 权限编码 | `delta:order-cancel:query` |
+| ReqVO | `DeltaOrderCancelPageReqVO`（继承 `PageParam`） |
+| RespVO | `CommonResult<PageResult<DeltaOrderCancelDO>>` |
+
+> ⚠️ **注意**：Admin 端分页直接返回 `DeltaOrderCancelDO`（数据库实体），**不经过 VO 转换**！这与 `progress-list` 和 `evidence-list` 类似。
+
+### Query 参数
+
+**源文件**：`DeltaOrderCancelPageReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `pageNo` | `Long` | 否 | PageParam 默认值 | 页码，从 1 开始 |
+| `pageSize` | `Long` | 否 | PageParam 默认值 | 每页条数 |
+| `cancelNo` | `String` | 否 | 无 | 取消单号 |
+| `serviceOrderId` | `Long` | 否 | 无 | 服务订单 ID |
+| `buyerUserId` | `Long` | 否 | 无 | 买家用户 ID |
+| `status` | `Integer` | 否 | 无 | 取消状态：0-待审核 1-已通过 2-已驳回 |
+| `createTime` | `LocalDateTime[]` | 否 | 无 | 创建时间范围（2 个元素） |
+
+### 响应字段（DeltaOrderCancelDO）
+
+**源文件**：`DeltaOrderCancelDO.java`
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 取消申请 ID |
+| `cancelNo` | `String` | 否 | 取消单号 |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `buyerUserId` | `Long` | 否 | 买家用户 ID |
+| `workerId` | `Long` | 是 | 打手 ID（服务单如有分配打手） |
+| `applyReason` | `String` | 是 | 申请原因 |
+| `applyRemark` | `String` | 是 | 申请备注 |
+| `applyStatus` | `Integer` | 否 | 取消状态：0-待审核 1-已通过 2-已驳回 |
+| `originalOrderStatus` | `Integer` | 否 | 原始服务单状态（快照） |
+| `cancelType` | `Integer` | 否 | 取消类型：1-买家取消 |
+| `refundAmount` | `Integer` | 是 | 退款金额（**单位：分**） |
+| `responsibilityType` | `Integer` | 是 | 责任归属 |
+| `reviewerId` | `Long` | 是 | 审核人 ID |
+| `reviewTime` | `LocalDateTime` | 是 | 审核时间 |
+| `reviewRemark` | `String` | 是 | 审核备注 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+| `updateTime` | `LocalDateTime` | 否 | 更新时间 |
+| `creator` | `String` | 是 | 创建者 |
+| `updater` | `String` | 是 | 更新者 |
+| `tenantId` | `Long` | 否 | 租户 ID |
+| `deleted` | `Boolean` | 否 | 是否删除 |
+
+### 不存在的字段（确认后端未提供）
+
+| 字段名 | 说明 |
+|--------|------|
+| `cancelReason` | 不存在（原因字段名为 `applyReason`） |
+| `applyAmount` | 不存在 |
+| `applicantType` | 不存在（当前仅买家取消，cancelType=1） |
+| `tradeOrderId` | 不存在 |
+| `tradeOrderNo` | 不存在 |
+| `memberNickname` | 不存在（Admin 端未拼接） |
+| `reviewerName` | 不存在（仅有 `reviewerId`） |
+| `rejectReason` | 不存在（驳回原因存储在 `reviewRemark`） |
+| `refundRequired` | 不存在 |
+| `settlementAffected` | 不存在 |
+| `completedTime` | 不存在 |
+
+### 排序规则
+
+- 按 `id` **降序**排列（最新在前）
+
+### 响应示例
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": {
+    "total": 50,
+    "list": [
+      {
+        "id": 1,
+        "cancelNo": "DCN202406220000001",
+        "serviceOrderId": 100,
+        "buyerUserId": 1001,
+        "workerId": 10,
+        "applyReason": "个人原因，不需要服务了",
+        "applyRemark": null,
+        "applyStatus": 0,
+        "originalOrderStatus": 30,
+        "cancelType": 1,
+        "refundAmount": null,
+        "responsibilityType": null,
+        "reviewerId": null,
+        "reviewTime": null,
+        "reviewRemark": null,
+        "createTime": "2024-06-22T14:00:00",
+        "updateTime": "2024-06-22T14:00:00",
+        "creator": null,
+        "updater": null,
+        "tenantId": 1,
+        "deleted": false
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 36. 订单取消申请详情
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询取消申请详情 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/order-cancel/get` |
+| Vue 前端路径 | `/delta/order-cancel/get` |
+| 权限编码 | `delta:order-cancel:query` |
+| RespVO | `CommonResult<DeltaOrderCancelDO>` |
+
+> ⚠️ **注意**：详情接口也**直接返回 DO**，不是单独的 VO 类。
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 取消申请 ID |
+
+### 响应字段
+
+同 **第 35 节 响应字段**（`DeltaOrderCancelDO`）。
+
+---
+
+## 37. 审批通过（批准取消）
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 批准取消 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/order-cancel/approve` |
+| Vue 前端路径 | `/delta/order-cancel/approve` |
+| 权限编码 | `delta:order-cancel:approve` |
+| ReqVO | `DeltaOrderCancelApproveReqVO` |
+| Core Service | `DeltaServiceOrderPhase8CoreService.approveCancelByAdmin()` |
+
+### Request Body
+
+**源文件**：`DeltaOrderCancelApproveReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 取消申请 ID |
+| `refundAmount` | `Integer` | 否 | 无 | 退款金额（**单位：分**） |
+| `responsibilityType` | `Integer` | 否 | 无 | 责任归属：0-买家 1-打手 2-平台 3-共同 4-无 |
+| `remark` | `String` | 否 | 无 | 审核备注 |
+
+### 业务规则（完整流程）
+
+1. 查询取消申请，必须存在，否则 `CANCEL_NOT_EXISTS`（1_020_012_000）
+2. 取消申请状态必须为 `0`（待审核），否则 `CANCEL_STATUS_INVALID`（1_020_012_001）
+3. 退款金额必须在 0 到服务金额之间，否则 `CANCEL_REFUND_AMOUNT_INVALID`（1_020_012_005）
+4. **CAS 更新服务单状态** → `110`（CANCELED），CAS 失败抛 `SERVICE_ORDER_STATUS_CHANGED`
+5. **CAS 更新取消申请状态** → `1`（已通过），记录审核人、审核时间、审核备注、退款金额、责任归属
+6. **有退款金额时**：自动创建待人工退款记录（`refundStatus=PENDING_MANUAL`）
+7. **取消有效分配**：将分配记录标记为 `CANCELED`
+8. **释放打手状态**：若无其他有效订单，打手 `BUSY → ONLINE`
+9. **结算联动**：调用 `cancelSettlementIfUnpaid`（见第 31 节结算业务边界）
+10. 写入订单操作日志（`operation="批准取消"`）
+11. Phase 10：发布取消通过事件 → 通知买家
+
+### 并发规则
+
+- 使用 **CAS 乐观锁** 更新服务单状态和取消申请状态
+- **无 Redisson 分布式锁**
+- 整体在 `@Transactional` 事务内执行
+
+### 关于备注
+
+- `remark` 字段**非必填**，可以为空
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 38. 审批驳回
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 驳回取消 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/order-cancel/reject` |
+| Vue 前端路径 | `/delta/order-cancel/reject` |
+| 权限编码 | `delta:order-cancel:reject` |
+| ReqVO | `DeltaOrderCancelRejectReqVO` |
+| Core Service | `DeltaServiceOrderPhase8CoreService.rejectCancelByAdmin()` |
+
+### Request Body
+
+**源文件**：`DeltaOrderCancelRejectReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 取消申请 ID |
+| `reason` | `String` | **是** | `@NotBlank` | 驳回原因 |
+
+### 业务规则
+
+1. 驳回原因不能为空（后端 `CANCEL_REJECT_REASON_EMPTY`，1_020_012_004）
+2. 取消申请必须存在，否则 `CANCEL_NOT_EXISTS`（1_020_012_000）
+3. 取消申请状态必须为 `0`（待审核），否则 `CANCEL_STATUS_INVALID`（1_020_012_001）
+4. **CAS 更新取消申请状态** → `2`（已驳回），记录审核人、审核时间、驳回原因
+5. **不修改服务单状态**（保持原状态不变）
+6. **不释放打手**、**不取消分配**、**不影响结算**
+7. 驳回原因长度：无明确限制（代码中未使用 `@Size`）
+8. 写入订单操作日志（`operation="驳回取消申请"`）
+
+### 并发规则
+
+- 使用 **CAS 乐观锁** 更新取消申请状态
+- **无 Redisson 分布式锁**
+- 整体在 `@Transactional` 事务内执行
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": true
+}
+```
+
+---
+
+## 39. 订单取消错误码
+
+**源文件**：`ErrorCodeConstants.java`（Phase 8 取消申请 1-020-012-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020012000` | `CANCEL_NOT_EXISTS` | 取消申请不存在 |
+| `1020012001` | `CANCEL_STATUS_INVALID` | 取消申请状态不允许此操作 |
+| `1020012002` | `CANCEL_ORDER_STATUS_NOT_ALLOWED` | 服务单状态不允许取消 |
+| `1020012003` | `CANCEL_ALREADY_PENDING` | 服务单已存在待处理取消申请 |
+| `1020012004` | `CANCEL_REJECT_REASON_EMPTY` | 取消驳回原因不能为空 |
+| `1020012005` | `CANCEL_REFUND_AMOUNT_INVALID` | 取消退款金额不合法（< 0 或 > 服务金额） |
+| `1020012006` | `CANCEL_NOT_BELONG_TO_USER` | 无权查看该取消申请（仅买家 App 校验） |
+
+> **注意**：`CANCEL_CROSS_TENANT` 错误码**不存在**。订单取消模块**没有专用的跨租户错误码**，可能由框架层（MyBatis-Plus 自动过滤 tenantId）统一处理。
+
+---
+
+## 40. 订单取消并发和幂等规则
+
+### 并发控制矩阵
+
+| 接口 | 并发控制方式 | 锁粒度 | 冲突处理 |
+|------|-------------|--------|----------|
+| approve | CAS 乐观锁（服务单 + 取消申请双重 CAS） | 单行 | `SERVICE_ORDER_STATUS_CHANGED` 或 `CANCEL_STATUS_INVALID` |
+| reject | CAS 乐观锁（取消申请 CAS） | 单行 | `CANCEL_STATUS_INVALID` |
+
+### CAS 机制
+
+- 取消申请：`DeltaOrderCancelMapper.updateStatusCas(id, newStatus, oldStatus, extra)`
+- 核心 SQL：`WHERE id = ? AND apply_status = oldStatus`
+- 服务单：同时通过 `DeltaServiceOrderMapper.updateStatusCas()` 更新（approve 时）
+
+### 分布式锁
+
+- 订单取消模块**没有使用 Redisson 分布式锁**。并发控制**完全依赖 CAS 乐观锁**。
+
+### 事务
+
+- `approve()` 和 `reject()` 均在 `@Transactional(rollbackFor = Exception.class)` 内执行
+- approve 的事务较大：包含服务单状态更新、取消申请状态更新、退款记录创建、分配取消、打手释放、结算联动等
+
+### 幂等规则
+
+| 接口 | 幂等性 |
+|------|--------|
+| approve | **不幂等**：重复调用因取消申请 CAS 失败（状态已变为 1）或服务单 CAS 失败抛错 |
+| reject | **不幂等**：重复调用因 CAS 失败（状态已变为 2）抛 `CANCEL_STATUS_INVALID` |
+
+### 重复申请防护
+
+- 同一服务单只能有一个待审核（`applyStatus=0`）的取消申请
+- `cancelSettlementIfUnpaid` 内部使用 CAS 更新结算状态，冲突不阻断流程（仅 log.warn）
+
+### 多租户
+
+- `DeltaOrderCancelDO` 继承 `TenantBaseDO`
+- 分页查询由 MyBatis-Plus 自动带 `tenant_id` 过滤（BaseMapperX 框架层）
+- Admin 审批接口不额外校验 tenantId（信任分页查询已过滤）
+
+### 可取消的服务单状态
+
+**源文件**：`ServiceOrderStatusEnum.canCancel()`
+
+允许取消的状态：
+- `PENDING_DISPATCH`（10，待派单）
+- `POOL_PENDING`（30，接单大厅待领取）
+- `ACCEPTED_PENDING_START`（40，已接单待开始）
+
+不允许取消的状态（会抛 `CANCEL_ORDER_STATUS_NOT_ALLOWED`）：
+- `WAITING_DESIGNATED`（20）
+- `IN_PROGRESS`（50）
+- `WORKER_SUBMITTED`（60）
+- `PENDING_VERIFICATION`（70）
+- `COMPLETED`（80）
+- `AFTER_SALE`（90）
+- `DISPUTE`（100）
+- `CANCELED`（110）
+
+---
+
+## 41. 第四阶段 Vue3 对接注意事项
+
+### URL 前缀
+
+```typescript
+// ✅ 正确写法
+const url = '/delta/worker-settlement/page';
+const url = '/delta/order-cancel/page';
+
+// ❌ 错误写法
+const url = '/admin-api/delta/worker-settlement/page';
+```
+
+### 数据类型
+
+| 项 | 类型 |
+|----|------|
+| ID 字段 | `number`（后端 Java `Long`） |
+| 状态值 | `number`（后端 `Integer`） |
+| 金额字段 | `number`（后端 `Integer`，单位：**分**） |
+| 抽成比例 | `number`（后端 `Integer`，**万分制**，如 1500 = 15.00%） |
+| 时间字段 | `string`（`LocalDateTime` 序列化为 ISO 字符串） |
+| 操作日志的 `operationType` | `string`（GENERATE/APPROVE/REJECT 等） |
+
+### 金额显示
+
+所有金额字段单位为**分**，前端显示时需除以 100。
+
+### 抽成比例显示
+
+```typescript
+function formatCommissionRate(rate: number): string {
+  return (rate / 100).toFixed(2) + '%';  // 1500 → "15.00%"
+}
+```
+
+### 枚举值映射表（新增）
+
+**打手结算状态（settlementStatus / settlement_status）**：
+
+| 值 | 名称 | 颜色建议 |
+|----|------|----------|
+| 0 | 待审核 | 蓝色/blue |
+| 1 | 审核通过 | 绿色/green |
+| 2 | 审核驳回 | 红色/red |
+| 3 | 已打款 | 灰色/gray |
+| 4 | 已取消 | 灰色/gray |
+
+**取消申请状态（applyStatus / apply_status）**：
+
+| 值 | 名称 | 颜色建议 |
+|----|------|----------|
+| 0 | 待审核 | 蓝色/blue |
+| 1 | 已通过 | 绿色/green |
+| 2 | 已驳回 | 红色/red |
+
+**责任归属类型（responsibilityType / responsibility_type）**：
+
+| 值 | 名称 |
+|----|------|
+| 0 | 买家责任 |
+| 1 | 打手责任 |
+| 2 | 平台责任 |
+| 3 | 共同责任 |
+| 4 | 无责任 |
+
+**结算操作类型（operationType，日志中）**：
+
+| 值 | 名称 |
+|----|------|
+| GENERATE | 生成结算 |
+| APPROVE | 审核通过 |
+| REJECT | 审核驳回 |
+| RESUBMIT | 重新提交审核 |
+| MARK_PAID | 标记已打款 |
+| REVOKE_PAID | 撤销打款 |
+
+### 特殊注意事项
+
+1. **Admin 取消申请返回 DO**：`DeltaOrderCancelController` 的分页和详情接口直接返回 `DeltaOrderCancelDO`，不是专门的 VO。这意味着前端会收到 `tenantId`、`deleted`、`creator`、`updater` 等管理字段，但无需使用它们。
+
+2. **结算状态字段名**：RespVO 中是 `settlementStatus`（不是 `status`），其对应的名称字段是 `settlementStatusName`。
+
+3. **结算详情含日志**：详情接口返回的 `logs` 字段包含操作日志列表，每条日志有 `beforeStatus`、`afterStatus`、`operationType` 等字段。
+
+4. **打手名称**：只有结算分页接口通过 Controller 层 `buildWorkerNameMap()` 额外拼接了打手名称（`workerName`），取消申请接口不包含打手名称（仅 `workerId`）。
+
+5. **commissionRate 传入注意**：重新提交审核时可修改抽成比例，`commissionRate` 为**万分制整数**。传入 `null` 表示不修改。
+
+6. **审批通过需要联动确认**：批准取消会触发大量联动操作（退款创建、结算取消、打手释放），前端应在确认对话框中说明影响范围。
+
+---
+
+## 42. 第四阶段后端尚未提供的内容
+
+| 内容 | 说明 |
+|------|------|
+| 结算单独立日志查询接口 | 日志内嵌在详情接口中（`logs` 字段），没有独立的分页日志查询接口 |
+| 根据服务订单查询结算 | 分页接口可通过 `serviceOrderId` 参数筛选，但没有直接的 `GET /get-by-order` 接口 |
+| 根据打手单独查询结算 | 分页接口可通过 `workerId` 参数筛选，但没有直接的 `GET /get-by-worker` 接口 |
+| 结算统计/汇总接口（Admin 端） | 当前无 Admin 端统计接口（APP 端有 `summary`） |
+| 取消申请的 `cancel`（撤回）操作 | 不存在，仅有 `approve` 和 `reject` |
+| 取消申请日志查询 | 没有独立的取消操作日志，操作记录在服务订单日志中 |
+| cancelNo 生成规则 | 未在代码中暴露具体规则，由 `DeltaNoRedisDAO.generateCancelNo()` 处理 |
+| settlementNo 生成规则 | 未在代码中暴露具体规则，由 `DeltaNoRedisDAO.generateSettlementNo()` 处理 |
+| 取消申请响应中的买家昵称 | Admin 端返回的 DO 未拼接 `memberNickname`，仅 `buyerUserId` |
+| 取消申请响应中的审核人名称 | 仅有 `reviewerId`，无 `reviewerName` |
+| 批量审批取消 | 不存在 |
+| 后台主动创建取消申请 | 不存在（只有买家 App 可以提交取消申请） |
+
+---
+
+## 43. 售后案件模块说明
+
+**源文件**：`DeltaAfterSaleController.java`、`DeltaServiceOrderPhase8CoreService.java`、`DeltaServiceOrderService.java`
+
+| 项 | 值 |
+|---|---|
+| Controller 类名 | `DeltaAfterSaleController` |
+| `@RequestMapping` | `/delta/after-sale` |
+| 完整后端路径前缀 | `/admin-api/delta/after-sale` |
+| Vue 前端应使用路径前缀 | `/delta/after-sale` |
+| 模块中文名 | 售后案件管理与仲裁（Phase 8） |
+
+### 模块说明
+
+买家在服务完成后 7 天内可申请售后，后台管理员可受理、驳回、仲裁售后案件。仲裁时可选择不退款/全额退款/部分退款/继续服务。
+
+### 售后申请来源
+
+- **买家 App**：`POST /app-api/delta/service-order/after-sale-apply`（买家提交售后申请）
+- **后台**：目前只有管理接口（accept/reject/arbitrate/close），后台**不能主动创建**售后申请
+
+---
+
+## 44. 售后状态枚举
+
+**源文件**：`AfterSaleStatusEnum.java`
+
+| 状态值 | 枚举常量 | 中文名称 | 是否终态 | 说明 |
+|--------|----------|----------|----------|------|
+| `0` | `PENDING` | 待处理 | 否 | 买家提交后初始状态 |
+| `1` | `ACCEPTED` | 已受理 | 否 | 管理员受理后可进入仲裁 |
+| `2` | `REJECTED` | 已驳回 | 是* | 驳回后可关闭 |
+| `3` | `ARBITRATED` | 已仲裁 | 是* | 仲裁后可关闭 |
+| `4` | `CLOSED` | 已关闭 | **是** | 终态 |
+
+> \* 已驳回和已仲裁状态可以通过 `close` 操作转为已关闭。
+
+### 售后类型枚举
+
+**源文件**：`AfterSaleTypeEnum.java`
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `1` | `QUALITY_ISSUE` | 服务质量问题 |
+| `2` | `NOT_AS_DESCRIBED` | 服务与描述不符 |
+| `3` | `WORKER_NO_SHOW` | 打手未履约 |
+| `4` | `OTHER` | 其他 |
+
+### 仲裁决定类型枚举
+
+**源文件**：`ArbitrationDecisionTypeEnum.java`
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `0` | `NO_REFUND` | 不退款 |
+| `1` | `FULL_REFUND` | 全额退款 |
+| `2` | `PARTIAL_REFUND` | 部分退款 |
+| `3` | `CONTINUE_SERVICE` | 继续服务 |
+
+---
+
+## 45. 售后状态矩阵
+
+**源文件**：`DeltaServiceOrderPhase8CoreService.java` + `AfterSaleStatusEnum.java`
+
+| 当前状态 | accept | reject | arbitrate | close |
+|----------|--------|--------|-----------|-------|
+| 0 (待处理) | **允许** →1 | **允许** →2 | **允许** →3 | 不允许 |
+| 1 (已受理) | 不允许 | **允许** →2 | **允许** →3 | 不允许 |
+| 2 (已驳回) | 不允许 | 不允许 | 不允许 | **允许** →4 |
+| 3 (已仲裁) | 不允许 | 不允许 | 不允许 | **允许** →4 |
+| 4 (已关闭) | 不允许 | 不允许 | 不允许 | 不允许 |
+
+---
+
+## 46. 售后分页
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 分页查询售后案件 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/after-sale/page` |
+| Vue 前端路径 | `/delta/after-sale/page` |
+| 权限编码 | `delta:after-sale:query` |
+| ReqVO | `DeltaAfterSalePageReqVO`（继承 `PageParam`） |
+| RespVO | `CommonResult<PageResult<DeltaAfterSaleDO>>` |
+
+> ⚠️ **注意**：Admin 端分页直接返回 `DeltaAfterSaleDO`（数据库实体），**不经过 VO 转换**。
+
+### Query 参数
+
+**源文件**：`DeltaAfterSalePageReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `pageNo` | `Long` | 否 | PageParam 默认值 | 页码 |
+| `pageSize` | `Long` | 否 | PageParam 默认值 | 每页条数 |
+| `afterSaleNo` | `String` | 否 | 无 | 售后单号 |
+| `serviceOrderId` | `Long` | 否 | 无 | 服务订单 ID |
+| `buyerUserId` | `Long` | 否 | 无 | 买家用户 ID |
+| `workerId` | `Long` | 否 | 无 | 打手 ID |
+| `status` | `Integer` | 否 | 无 | 售后状态 |
+| `createTime` | `LocalDateTime[]` | 否 | 无 | 创建时间范围 |
+
+### 响应字段（DeltaAfterSaleDO）
+
+**源文件**：`DeltaAfterSaleDO.java`
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 售后案件 ID |
+| `afterSaleNo` | `String` | 否 | 售后单号 |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `buyerUserId` | `Long` | 否 | 买家用户 ID |
+| `workerId` | `Long` | 是 | 打手 ID |
+| `afterSaleType` | `Integer` | 否 | 售后类型：1-服务质量 2-描述不符 3-未履约 4-其他 |
+| `reasonType` | `Integer` | 否 | 原因类型 |
+| `reason` | `String` | 是 | 申请原因 |
+| `description` | `String` | 是 | 问题描述 |
+| `evidenceUrls` | `String` | 是 | 凭证图片 URLs（JSON 数组） |
+| `status` | `Integer` | 否 | 售后状态（见第 44 节） |
+| `originalOrderStatus` | `Integer` | 否 | 原始服务单状态（快照） |
+| `requestedRefundAmount` | `Integer` | 是 | 请求退款金额（**单位：分**） |
+| `approvedRefundAmount` | `Integer` | 是 | 批准退款金额（**单位：分**） |
+| `responsibilityType` | `Integer` | 是 | 责任归属 |
+| `handlerId` | `Long` | 是 | 处理人 ID |
+| `handleTime` | `LocalDateTime` | 是 | 处理时间 |
+| `handleRemark` | `String` | 是 | 处理备注 |
+| `needManualRecovery` | `Boolean` | 是 | 需要人工追回 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+| `updateTime` | `LocalDateTime` | 否 | 更新时间 |
+| `creator` | `String` | 是 | 创建者 |
+| `updater` | `String` | 是 | 更新者 |
+| `tenantId` | `Long` | 否 | 租户 ID |
+| `deleted` | `Boolean` | 否 | 是否删除 |
+
+### 不存在的字段（确认后端未提供）
+
+| 字段名 | 说明 |
+|--------|------|
+| `serviceOrderNo` | 不存在 |
+| `tradeOrderId` | 不存在 |
+| `tradeOrderNo` | 不存在 |
+| `buyerDemand` | 不存在（买家诉求蕴含在 `reason` + `requestedRefundAmount` 中） |
+| `arbitrationResult` | 不存在（仲裁结果在 `DeltaAfterSaleArbitrationDO` 中） |
+| `refundAmount` | 不存在（使用 `approvedRefundAmount`） |
+| `workerDeductAmount` | 不存在（在仲裁记录中） |
+| `platformAmount` | 不存在（在仲裁记录中） |
+| `reviewerId` | 不存在（使用 `handlerId`） |
+| `reviewRemark` | 不存在（使用 `handleRemark`） |
+| `acceptTime` | 不存在（使用 `handleTime`） |
+| `arbitrateTime` | 不存在（仲裁时间在仲裁记录中） |
+| `closeTime` | 不存在（使用 `handleTime`） |
+
+### 排序规则
+
+- 按 `id` **降序**排列
+
+---
+
+## 47. 售后详情
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询售后案件详情 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/after-sale/get` |
+| Vue 前端路径 | `/delta/after-sale/get` |
+| 权限编码 | `delta:after-sale:query` |
+| RespVO | `CommonResult<DeltaAfterSaleDO>` |
+
+> ⚠️ **注意**：详情也**直接返回 DO**，与分页结构相同。
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 售后案件 ID |
+
+### 响应字段
+
+同 **第 46 节 响应字段**（`DeltaAfterSaleDO`）。
+
+---
+
+## 48. 售后证据与日志
+
+| 内容 | 说明 |
+|------|------|
+| 证据查询 | `evidenceUrls` 字段内嵌在 DO 中（JSON 数组字符串），**没有独立证据查询接口** |
+| 仲裁记录查询 | 通过 `DeltaAfterSaleArbitrationMapper.selectListByAfterSaleId()` 可查询仲裁记录，但**没有暴露为 Admin API** |
+| 操作日志 | 操作记录在服务订单日志中（`DeltaOrderLogDO`），**没有售后独立操作日志接口** |
+
+---
+
+## 49. 受理售后
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 受理售后 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/after-sale/accept` |
+| Vue 前端路径 | `/delta/after-sale/accept` |
+| 权限编码 | `delta:after-sale:accept` |
+| ReqVO | `DeltaAfterSaleAcceptReqVO` |
+| Core Service | `DeltaServiceOrderPhase8CoreService.acceptAfterSaleByAdmin()` |
+
+### Request Body
+
+**源文件**：`DeltaAfterSaleAcceptReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 售后案件 ID |
+| `remark` | `String` | 否 | 无 | 备注 |
+
+### 业务规则
+
+1. 当前状态必须是 `0`（待处理），否则抛 `AFTER_SALE_STATUS_CANNOT_ACCEPT`（1_020_013_006）
+2. **操作后目标状态**：`1`（已受理）
+3. 记录 `handlerId`、`handleTime`、`handleRemark`
+4. 写入订单操作日志
+5. **不修改服务单状态**
+
+### 并发规则
+
+- 使用 **CAS 乐观锁**（`updateStatusCas`）
+- CAS 失败不报异常（方法无返回值校验）
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 50. 驳回售后
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 驳回售后 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/after-sale/reject` |
+| Vue 前端路径 | `/delta/after-sale/reject` |
+| 权限编码 | `delta:after-sale:reject` |
+| ReqVO | `DeltaAfterSaleRejectReqVO` |
+| Core Service | `DeltaServiceOrderPhase8CoreService.rejectAfterSaleByAdmin()` |
+
+### Request Body
+
+**源文件**：`DeltaAfterSaleRejectReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 售后案件 ID |
+| `reason` | `String` | **是** | `@NotBlank` | 驳回原因 |
+
+### 业务规则
+
+1. 驳回原因不能为空（后端 `AFTER_SALE_REJECT_REASON_EMPTY`，1_020_013_011）
+2. 当前状态必须是 `0`（待处理）或 `1`（已受理），否则抛 `AFTER_SALE_STATUS_CANNOT_REJECT`（1_020_013_007）
+3. **恢复服务单到原状态**（`originalOrderStatus`），CAS 更新
+4. **操作后目标状态**：`2`（已驳回）
+5. 记录 `handlerId`、`handleTime`、`handleRemark`
+6. 写入订单操作日志
+
+### 并发规则
+
+- 双重 CAS：服务单 CAS + 售后 CAS
+- 整体在 `@Transactional` 内执行
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 51. 售后仲裁
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 仲裁售后 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/after-sale/arbitrate` |
+| Vue 前端路径 | `/delta/after-sale/arbitrate` |
+| 权限编码 | `delta:after-sale:arbitrate` |
+| ReqVO | `DeltaAfterSaleArbitrateReqVO` |
+| Core Service | `DeltaServiceOrderPhase8CoreService.arbitrateAfterSaleByAdmin()` |
+
+### Request Body
+
+**源文件**：`DeltaAfterSaleArbitrateReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 售后案件 ID |
+| `decisionType` | `Integer` | **是** | `@NotNull` | 仲裁决定：0-不退款 1-全额退款 2-部分退款 3-继续服务 |
+| `refundAmount` | `Integer` | 否 | 无 | 退款金额（**单位：分**） |
+| `responsibilityType` | `Integer` | 否 | 无 | 责任归属 |
+| `workerDeductionAmount` | `Integer` | 否 | 无 | 打手扣减金额（**单位：分**） |
+| `platformBearAmount` | `Integer` | 否 | 无 | 平台承担金额（**单位：分**） |
+| `remark` | `String` | 否 | 无 | 备注 |
+
+### 业务规则（完整流程）
+
+1. 当前状态必须是 `0`（待处理）或 `1`（已受理），否则抛 `AFTER_SALE_STATUS_CANNOT_ARBITRATE`（1_020_013_008）
+2. **不能重复仲裁**：同一售后只能有一条仲裁记录，否则抛 `ARBITRATION_ALREADY_EXISTS`（1_020_014_003）
+3. 退款金额验证（全额/部分退款时）：
+   - `refundAmount` 必须 ≥ 0 且 ≤ 服务金额，否则抛 `ARBITRATION_AMOUNT_INVALID`（1_020_014_001）
+   - `workerDeductionAmount + platformBearAmount ≤ refundAmount`，否则抛 `ARBITRATION_AMOUNT_SUM_INVALID`（1_020_014_002）
+4. **决定服务单新状态**：
+   - 全额退款 → `CANCELED`（110）
+   - 部分退款 + 原已完成 → `COMPLETED`（80）；否则 → `CANCELED`（110）
+   - 不退款/继续服务 → 恢复 `originalOrderStatus`
+5. CAS 更新服务单状态
+6. 保存仲裁记录到 `delta_after_sale_arbitration`
+7. 更新售后状态为 `3`（已仲裁），记录 `approvedRefundAmount`、`responsibilityType`
+8. **有退款金额时（refundAmount > 0）**：自动创建待人工退款记录（通过 `createRefundRecord`）
+9. **全额退款时**：联动结算取消（`cancelSettlementIfUnpaid`）
+10. **服务单进入 CANCELED**：释放打手 + 取消分配
+11. 写入订单操作日志
+12. Phase 10：发布售后仲裁完成事件 → 通知买家
+
+### 仲裁业务影响汇总
+
+| 影响项 | 是否发生 | 条件 |
+|--------|----------|------|
+| 创建退款记录 | **是** | `refundAmount > 0` |
+| 修改服务订单状态 | **是** | 根据决定类型 |
+| 取消结算 | **是** | 全额退款时 |
+| 创建追回任务 | **否** | 仲裁时**不自动创建**追回任务（需后台手动补生成，见 Phase 9 `createRecoveryTask`） |
+| 扣减打手收入 | **否** | `workerDeductionAmount` 仅记录在仲裁记录中，由追回任务执行 |
+| 平台承担金额 | **否** | `platformBearAmount` 仅记录在仲裁记录中 |
+| 释放打手 | **是** | 服务单进入 CANCELED 时 |
+| 通知买家 | **是** | Phase 10 事件通知 |
+| 写入 Outbox | **是** | 仲裁完成事件 |
+
+### 并发规则
+
+- 整体在 `@Transactional` 内执行
+- 服务单使用 CAS 乐观锁
+- 售后状态使用 CAS 乐观锁
+- 仲裁去重通过数据库唯一键 + 业务校验
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 52. 关闭售后
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 关闭售后案件 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/after-sale/close` |
+| Vue 前端路径 | `/delta/after-sale/close` |
+| 权限编码 | `delta:after-sale:close` |
+| ReqVO | `DeltaAfterSaleCloseReqVO` |
+| Core Service | `DeltaServiceOrderPhase8CoreService.closeAfterSaleByAdmin()` |
+
+### Request Body
+
+**源文件**：`DeltaAfterSaleCloseReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 售后案件 ID |
+| `remark` | `String` | 否 | 无 | 备注 |
+
+### 业务规则
+
+1. 当前状态必须是 `2`（已驳回）或 `3`（已仲裁），否则抛 `AFTER_SALE_STATUS_CANNOT_CLOSE`（1_020_013_009）
+2. **操作后目标状态**：`4`（已关闭，终态）
+3. 记录 `handlerId`、`handleTime`、`handleRemark`
+4. 写入订单操作日志
+
+### 并发规则
+
+- 使用 **CAS 乐观锁**（`updateStatusCas`）
+- 整体在 `@Transactional` 内执行
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 53. 售后错误码
+
+**源文件**：`ErrorCodeConstants.java`
+
+### 售后核心（1-020-013-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020013000` | `AFTER_SALE_NOT_EXISTS` | 售后案件不存在 |
+| `1020013001` | `AFTER_SALE_ORDER_STATUS_NOT_ALLOWED` | 服务单状态不允许申请售后 |
+| `1020013002` | `AFTER_SALE_ALREADY_ACTIVE` | 服务单已存在进行中的售后案件 |
+| `1020013003` | `AFTER_SALE_TIME_EXCEED` | 售后申请超过时间限制（完成后 7 天内） |
+| `1020013004` | `AFTER_SALE_REASON_EMPTY` | 售后申请原因不能为空 |
+| `1020013005` | `AFTER_SALE_REFUND_AMOUNT_INVALID` | 请求退款金额不合法 |
+| `1020013006` | `AFTER_SALE_STATUS_CANNOT_ACCEPT` | 售后状态不允许受理 |
+| `1020013007` | `AFTER_SALE_STATUS_CANNOT_REJECT` | 售后状态不允许驳回 |
+| `1020013008` | `AFTER_SALE_STATUS_CANNOT_ARBITRATE` | 售后状态不允许仲裁 |
+| `1020013009` | `AFTER_SALE_STATUS_CANNOT_CLOSE` | 售后状态不允许关闭 |
+| `1020013010` | `AFTER_SALE_NOT_BELONG_TO_USER` | 无权查看该售后案件 |
+| `1020013011` | `AFTER_SALE_REJECT_REASON_EMPTY` | 售后驳回原因不能为空 |
+| `1020013012` | `AFTER_SALE_ALREADY_PROCESSED` | 售后案件已经处理完成 |
+
+### 仲裁（1-020-014-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020014000` | `ARBITRATION_DECISION_INVALID` | 仲裁决定类型不合法 |
+| `1020014001` | `ARBITRATION_AMOUNT_INVALID` | 仲裁退款金额不合法 |
+| `1020014002` | `ARBITRATION_AMOUNT_SUM_INVALID` | 责任金额合计不合法 |
+| `1020014003` | `ARBITRATION_ALREADY_EXISTS` | 该售后案件已有仲裁记录 |
+
+---
+
+## 54. 售后并发和幂等规则
+
+### 并发控制矩阵
+
+| 接口 | 并发控制方式 | 锁粒度 | 冲突处理 |
+|------|-------------|--------|----------|
+| accept | CAS 乐观锁 | 单行（id + oldStatus） | CAS 失败不影响（无 rows 校验） |
+| reject | 双重 CAS（服务单 + 售后） | 两行 | `SERVICE_ORDER_STATUS_CHANGED` |
+| arbitrate | CAS（服务单 + 售后）+ 仲裁唯一键 | 两行 + 表唯一键 | `SERVICE_ORDER_STATUS_CHANGED` 或 `ARBITRATION_ALREADY_EXISTS` |
+| close | CAS 乐观锁 | 单行 | CAS 失败不影响 |
+
+### CAS 机制
+
+- 售后状态：`DeltaAfterSaleMapper.updateStatusCas(id, newStatus, oldStatus, extra)`
+- 核心 SQL：`WHERE id = ? AND status = oldStatus`
+- 服务单状态：`DeltaServiceOrderMapper.updateStatusCas(...)`
+
+### 分布式锁
+
+- 售后模块**没有使用 Redisson 分布式锁**。并发控制**完全依赖 CAS 乐观锁**。
+
+### 幂等规则
+
+| 接口 | 幂等性 |
+|------|--------|
+| accept | **不幂等**：重复调用因 CAS 失败（状态不是 0）不报错但无效果 |
+| reject | **不幂等**：重复调用因售后 CAS 失败不报错（无 rows 校验） |
+| arbitrate | **防重**：同一售后不能重复仲裁（`ARBITRATION_ALREADY_EXISTS`） |
+| close | **不幂等**：重复调用因 CAS 失败不报错 |
+
+### 多租户
+
+- `DeltaAfterSaleDO` 继承 `TenantBaseDO`
+- 分页查询由 MyBatis-Plus 自动带 `tenant_id` 过滤
+- Admin 操作接口不额外校验 tenantId
+
+---
+
+## 55. 退款记录模块说明
+
+**源文件**：`DeltaRefundRecordController.java`、`DeltaServiceOrderPhase9CoreService.java`、`DeltaRefundRecordDO.java`
+
+| 项 | 值 |
+|---|---|
+| Controller 类名 | `DeltaRefundRecordController` |
+| `@RequestMapping` | `/delta/refund-record` |
+| 完整后端路径前缀 | `/admin-api/delta/refund-record` |
+| Vue 前端应使用路径前缀 | `/delta/refund-record` |
+| 模块中文名 | 人工退款记录管理（Phase 9） |
+
+### 模块说明
+
+本模块管理**内部人工退款记录**，**不调用真实支付渠道**。退款记录来自：
+- 取消申请批准时（有退款金额）自动创建
+- 售后仲裁时（有退款金额）自动创建
+
+管理员需**线下人工完成退款转账**后，在后台标记退款完成。
+
+### ⚠️ 退款是否真实调用第三方
+
+**否**。本模块是纯人工退款记账，**不调用微信/支付宝等第三方支付退款 API**。`DeltaRefundRecordDO` 注释明确写 "内部退款记录 DO（不调用真实支付接口）"。
+
+---
+
+## 56. 退款状态枚举
+
+**源文件**：`RefundStatusEnum.java`
+
+| 状态值 | 枚举常量 | 中文名称 | 是否终态 | 说明 |
+|--------|----------|----------|----------|------|
+| `0` | `PENDING_MANUAL` | 待人工退款 | 否 | 自动创建后初始状态 |
+| `1` | `MANUAL_PROCESSING` | 人工退款处理中 | 否 | 管理员开始处理 |
+| `2` | `MANUAL_COMPLETED` | 人工退款已完成 | **是** | 管理员完成退款 |
+| `3` | `CANCELED` | 已取消 | **是** | 管理员撤销（仅待处理可撤销） |
+| `4` | `MANUAL_FAILED` | 人工退款失败 | 否 | 可从失败重试 |
+
+### 退款方式枚举
+
+**源文件**：`RefundMethodEnum.java`
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `1` | `WECHAT` | 人工微信 |
+| `2` | `BANK_CARD` | 银行卡 |
+| `3` | `ALIPAY` | 支付宝 |
+| `4` | `OTHER` | 其他 |
+
+### 退款操作日志类型枚举
+
+**源文件**：`RefundLogOperationTypeEnum.java`
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `CREATE` | `CREATE` | 创建退款记录 |
+| `START` | `START` | 开始处理 |
+| `COMPLETE` | `COMPLETE` | 退款完成 |
+| `FAIL` | `FAIL` | 退款失败 |
+| `RETRY` | `RETRY` | 重新处理 |
+| `CANCEL` | `CANCEL` | 撤销退款 |
+
+---
+
+## 57. 退款状态矩阵
+
+**源文件**：`DeltaServiceOrderPhase9CoreService.java`
+
+| 当前状态 | start | complete | fail | retry | cancel |
+|----------|-------|----------|------|-------|--------|
+| 0 (待人工退款) | **允许** →1 | 不允许 | 不允许 | 不允许 | **允许** →3 |
+| 1 (处理中) | 不允许 | **允许** →2 | **允许** →4 | 不允许 | 不允许 |
+| 2 (已完成) | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+| 3 (已取消) | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+| 4 (失败) | 不允许 | 不允许 | 不允许 | **允许** →0 | 不允许 |
+
+---
+
+## 58. 退款分页
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 分页查询退款记录 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/refund-record/page` |
+| Vue 前端路径 | `/delta/refund-record/page` |
+| 权限编码 | `delta:refund-record:query` |
+| ReqVO | `DeltaRefundRecordPageReqVO`（继承 `PageParam`） |
+| RespVO | `CommonResult<PageResult<DeltaRefundRecordDO>>` |
+
+> ⚠️ **注意**：Admin 端分页直接返回 `DeltaRefundRecordDO`，**不经过 VO 转换**。
+
+### Query 参数
+
+**源文件**：`DeltaRefundRecordPageReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `pageNo` | `Long` | 否 | 页码 |
+| `pageSize` | `Long` | 否 | 每页条数 |
+| `refundNo` | `String` | 否 | 退款单号 |
+| `serviceOrderNo` | `String` | 否 | 服务单号 |
+| `afterSaleNo` | `String` | 否 | 售后单号 |
+| `buyerUserId` | `Long` | 否 | 买家用户 ID |
+| `refundStatus` | `Integer` | 否 | 退款状态 |
+| `refundMethod` | `Integer` | 否 | 退款方式 |
+| `handlerId` | `Long` | 否 | 处理人 ID |
+| `createTime` | `LocalDateTime[]` | 否 | 创建时间范围 |
+| `completedTime` | `LocalDateTime[]` | 否 | 完成时间范围 |
+
+### 响应字段（DeltaRefundRecordDO）
+
+**源文件**：`DeltaRefundRecordDO.java`
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 退款记录 ID |
+| `refundNo` | `String` | 否 | 退款单号 |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `afterSaleId` | `Long` | 是 | 售后案件 ID |
+| `buyerUserId` | `Long` | 否 | 买家用户 ID |
+| `refundAmount` | `Integer` | 否 | 退款金额（**单位：分**） |
+| `refundReason` | `String` | 是 | 退款原因 |
+| `refundStatus` | `Integer` | 否 | 退款状态 |
+| `refundChannel` | `String` | 是 | 退款渠道 |
+| `externalRefundNo` | `String` | 是 | 外部退款流水号 |
+| `operatorId` | `Long` | 是 | 操作人（创建人）ID |
+| `remark` | `String` | 是 | 备注 |
+| `handlerId` | `Long` | 是 | 处理人 ID |
+| `handleTime` | `LocalDateTime` | 是 | 开始处理时间 |
+| `completedTime` | `LocalDateTime` | 是 | 退款完成时间 |
+| `failedTime` | `LocalDateTime` | 是 | 退款失败时间 |
+| `refundMethod` | `Integer` | 是 | 人工退款方式 |
+| `externalReference` | `String` | 是 | 外部参考号 |
+| `failureReason` | `String` | 是 | 退款失败原因 |
+| `proofUrls` | `String` | 是 | 凭证 URL 列表（JSON 数组） |
+| `processRemark` | `String` | 是 | 处理备注 |
+
+### 不存在的字段（确认后端未提供）
+
+| 字段名 | 说明 |
+|--------|------|
+| `tradeOrderId` | 不存在 |
+| `tradeOrderNo` | 不存在 |
+| `serviceOrderNo` | 不存在（DO 中仅 `serviceOrderId`） |
+| `afterSaleNo` | 不存在（DO 中仅 `afterSaleId`） |
+| `orderCancelId` | 不存在 |
+| `orderCancelNo` | 不存在 |
+| `refundSource` | 不存在 |
+| `refundChannel` | 仅在 DO 中存在但实际未填充（退款渠道字段已废弃） |
+| `thirdPartyRefundNo` | 不存在 |
+| `retryCount` | 不存在（无重试次数限制） |
+| `processorId` | 不存在（使用 `handlerId` 作为处理人） |
+| `processTime` | 不存在（使用 `handleTime`） |
+| `completeTime` | 不存在（使用 `completedTime`） |
+| `updateTime` | 不存在 |
+
+### 金额规则
+
+| 规则 | 值 |
+|------|-----|
+| Java 类型 | `Integer` |
+| 单位 | **分** |
+| 是否允许部分退款 | **是**（仲裁时支持 `PARTIAL_REFUND`） |
+| 最大退款金额 | 不超过服务单 `serviceAmount` |
+| 是否允许超过订单实付金额 | **否**（`refundAmount >= 0 && refundAmount <= order.serviceAmount`） |
+| 是否包含此前已退款金额 | 否（单次退款独立） |
+
+### 排序规则
+
+- 按 `id` **降序**排列
+
+---
+
+## 59. 退款详情
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询退款记录详情 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/refund-record/get` |
+| Vue 前端路径 | `/delta/refund-record/get` |
+| 权限编码 | `delta:refund-record:query` |
+| RespVO | `CommonResult<DeltaRefundRecordDO>` |
+
+> ⚠️ **注意**：详情也**直接返回 DO**。
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 退款记录 ID |
+
+### 可选 RespVO
+
+后端也有 `DeltaRefundRecordRespVO`（含状态名称、方式名称的拼接），但 Admin Controller 中**目前未使用**，分页和详情都直接返回 DO。
+
+---
+
+## 60. 退款日志
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询退款操作日志 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/refund-record/logs` |
+| Vue 前端路径 | `/delta/refund-record/logs` |
+| 权限编码 | `delta:refund-record:query` |
+| RespVO | `CommonResult<List<DeltaRefundLogDO>>` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 退款记录 ID |
+
+### 响应字段（DeltaRefundLogDO）
+
+**源文件**：`DeltaRefundLogDO.java`
+
+| 字段名 | Java 类型 | 含义 |
+|--------|-----------|------|
+| `id` | `Long` | 日志 ID |
+| `refundRecordId` | `Long` | 退款记录 ID |
+| `serviceOrderId` | `Long` | 服务订单 ID |
+| `afterSaleId` | `Long` | 售后案件 ID |
+| `operationType` | `String` | 操作类型（CREATE/START/COMPLETE/FAIL/RETRY/CANCEL） |
+| `beforeStatus` | `Integer` | 操作前状态 |
+| `afterStatus` | `Integer` | 操作后状态 |
+| `operatorType` | `String` | 操作人类型（ADMIN/SYSTEM） |
+| `operatorId` | `Long` | 操作人 ID |
+| `content` | `String` | 日志内容 |
+| `amountSnapshot` | `Integer` | 金额快照 |
+| `createTime` | `LocalDateTime` | 创建时间 |
+
+---
+
+## 61. 退款管理操作
+
+### 61.1 开始处理退款
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 开始处理退款 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/refund-record/start` |
+| Vue 前端路径 | `/delta/refund-record/start` |
+| 权限编码 | `delta:refund-record:process` |
+| ReqVO | `DeltaRefundRecordStartReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 退款记录 ID |
+| `remark` | `String` | 否 | 处理备注 |
+
+#### 业务规则
+
+1. 当前状态必须是 `0`（待人工退款），否则抛 `REFUND_STATUS_CANNOT_START`（1_020_017_000）
+2. **操作后目标状态**：`1`（人工退款处理中）
+3. 记录 `handlerId`、`handleTime`、`processRemark`
+4. CAS 更新
+5. 写退款日志（`START`）
+
+#### 响应：`{ "code": 0, "msg": "成功", "data": true }`
+
+---
+
+### 61.2 标记退款完成
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 标记退款完成 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/refund-record/complete` |
+| Vue 前端路径 | `/delta/refund-record/complete` |
+| 权限编码 | `delta:refund-record:complete` |
+| ReqVO | `DeltaRefundRecordCompleteReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 退款记录 ID |
+| `refundMethod` | `Integer` | 是 | 退款方式：1-人工微信 2-银行卡 3-支付宝 4-其他 |
+| `externalReference` | `String` | 否 | 外部参考号（人工转账流水号） |
+| `proofUrls` | `List<String>` | 否 | 凭证 URL 列表 |
+| `remark` | `String` | 否 | 处理备注 |
+
+#### 业务规则
+
+1. 当前状态必须是 `1`（处理中），否则 `REFUND_STATUS_CANNOT_COMPLETE`（1_020_017_001）
+2. `refundMethod` 必须合法（1-4），否则 `REFUND_METHOD_INVALID`（1_020_017_005）
+3. `externalReference` 最长 128 字符，否则 `REFUND_EXTERNAL_REF_TOO_LONG`（1_020_017_012）
+4. 至少填写外部参考号、凭证或备注之一，否则 `REFUND_PROOF_REQUIRED`（1_020_017_006）
+5. **操作后目标状态**：`2`（人工退款已完成，终态）
+6. Phase 10：发布退款完成事件 → 通知买家
+
+#### 响应：`{ "code": 0, "msg": "成功", "data": true }`
+
+---
+
+### 61.3 标记退款失败
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 标记退款失败 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/refund-record/fail` |
+| Vue 前端路径 | `/delta/refund-record/fail` |
+| 权限编码 | `delta:refund-record:process`（与 start 共用） |
+| ReqVO | `DeltaRefundRecordFailReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 退款记录 ID |
+| `reason` | `String` | 是 | 失败原因 |
+
+#### 业务规则
+
+1. 失败原因不能为空 `REFUND_FAIL_REASON_REQUIRED`（1_020_017_007）
+2. 当前状态必须是 `1`（处理中），否则 `REFUND_STATUS_CANNOT_FAIL`（1_020_017_002）
+3. **操作后目标状态**：`4`（人工退款失败）
+4. 记录 `failedTime`、`failureReason`
+5. Phase 10：发布退款失败事件 → 通知买家
+
+#### 响应：`{ "code": 0, "msg": "成功", "data": true }`
+
+---
+
+### 61.4 重新处理退款
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 重新处理退款 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/refund-record/retry` |
+| Vue 前端路径 | `/delta/refund-record/retry` |
+| 权限编码 | `delta:refund-record:process`（与 start 共用） |
+| ReqVO | `DeltaRefundRecordRetryReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 退款记录 ID |
+| `remark` | `String` | 否 | 备注 |
+
+#### 业务规则
+
+1. 当前状态必须是 `4`（失败），否则 `REFUND_STATUS_CANNOT_RETRY`（1_020_017_003）
+2. **操作后目标状态**：`0`（待人工退款）
+3. 清除 `failedTime`、`failureReason`、`handlerId`、`handleTime`
+
+#### 响应：`{ "code": 0, "msg": "成功", "data": true }`
+
+---
+
+### 61.5 撤销退款记录
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 撤销退款记录 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/refund-record/cancel` |
+| Vue 前端路径 | `/delta/refund-record/cancel` |
+| 权限编码 | `delta:refund-record:cancel` |
+| ReqVO | `DeltaRefundRecordCancelReqVO` |
+
+#### Request Body
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 退款记录 ID |
+| `reason` | `String` | 是 | 撤销原因 |
+
+#### 业务规则
+
+1. 撤销原因不能为空（共用 `RECOVERY_CANCEL_REASON_REQUIRED`）
+2. 当前状态必须是 `0`（待人工退款），否则 `REFUND_STATUS_CANNOT_CANCEL`（1_020_017_004）
+3. **操作后目标状态**：`3`（已取消，终态）
+
+#### 响应：`{ "code": 0, "msg": "成功", "data": true }`
+
+---
+
+## 62. 退款错误码
+
+**源文件**：`ErrorCodeConstants.java`
+
+### 退款记录基础（1-020-015-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020015000` | `REFUND_RECORD_ALREADY_EXISTS` | 退款记录已存在 |
+| `1020015001` | `REFUND_RECORD_NOT_EXISTS` | 退款记录不存在 |
+
+### 退款处理操作（1-020-017-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020017000` | `REFUND_STATUS_CANNOT_START` | 退款状态不允许开始处理 |
+| `1020017001` | `REFUND_STATUS_CANNOT_COMPLETE` | 退款状态不允许完成 |
+| `1020017002` | `REFUND_STATUS_CANNOT_FAIL` | 退款状态不允许标记失败 |
+| `1020017003` | `REFUND_STATUS_CANNOT_RETRY` | 退款状态不允许重试 |
+| `1020017004` | `REFUND_STATUS_CANNOT_CANCEL` | 退款状态不允许撤销 |
+| `1020017005` | `REFUND_METHOD_INVALID` | 人工退款方式不合法 |
+| `1020017006` | `REFUND_PROOF_REQUIRED` | 人工退款凭证或参考信息不能为空 |
+| `1020017007` | `REFUND_FAIL_REASON_REQUIRED` | 退款失败原因不能为空 |
+| `1020017008` | `REFUND_ALREADY_COMPLETED` | 退款已完成，不能重复操作 |
+| `1020017009` | `REFUND_STATUS_CHANGED` | 退款状态已变化，请刷新后重试（CAS 冲突） |
+| `1020017010` | `REFUND_CROSS_TENANT` | 跨租户访问被拒绝 |
+| `1020017011` | `REFUND_NOT_BELONG_TO_USER` | 退款或追回无权访问 |
+| `1020017012` | `REFUND_EXTERNAL_REF_TOO_LONG` | 外部参考号过长（最大 128 字符） |
+
+---
+
+## 63. 退款并发和幂等规则
+
+### 并发控制矩阵
+
+| 接口 | 并发控制方式 | 锁粒度 | 冲突处理 |
+|------|-------------|--------|----------|
+| start | CAS 乐观锁 | 单行（id + oldStatus） | `REFUND_STATUS_CHANGED` |
+| complete | CAS 乐观锁 | 单行（id + oldStatus） | `REFUND_STATUS_CHANGED` |
+| fail | CAS 乐观锁 | 单行（id + oldStatus） | `REFUND_STATUS_CHANGED` |
+| retry | CAS 乐观锁 | 单行（id + oldStatus） | `REFUND_STATUS_CHANGED` |
+| cancel | CAS 乐观锁 | 单行（id + oldStatus） | `REFUND_STATUS_CHANGED` |
+
+### CAS 机制
+
+- `DeltaRefundRecordMapper.updateStatusCas(id, newStatus, expectedStatus, extra)`
+- 核心 SQL：`WHERE id = ? AND refund_status = expectedStatus`
+- 返回 `rows != 1` 视为冲突，抛出 `REFUND_STATUS_CHANGED`
+
+### 分布式锁
+
+- 退款模块**没有使用 Redisson 分布式锁**。并发控制**完全依赖 CAS 乐观锁**。
+
+### 事务
+
+- 所有退款操作接口均在 `@Transactional(rollbackFor = Exception.class)` 内执行
+- 操作内会写入退款日志（`DeltaRefundLogDO`）
+
+### 幂等规则
+
+| 接口 | 幂等性 |
+|------|--------|
+| start | **不幂等**：重复调用因 CAS 失败抛 `REFUND_STATUS_CHANGED` |
+| complete | **不幂等**：重复调用因 CAS 失败抛 `REFUND_STATUS_CHANGED` |
+| fail | **不幂等**：重复调用因 CAS 失败抛 `REFUND_STATUS_CHANGED` |
+| retry | **不幂等**：重复调用因 CAS 失败抛 `REFUND_STATUS_CHANGED` |
+| cancel | **不幂等**：重复调用因 CAS 失败抛 `REFUND_STATUS_CHANGED` |
+
+### 多租户
+
+- `DeltaRefundRecordDO` 继承 `TenantBaseDO`
+- 分页查询由 MyBatis-Plus 自动带 `tenant_id` 过滤
+- `REFUND_CROSS_TENANT`（1_020_017_010）在 ErrorCodeConstants 中定义但未在 Admin Controller 中直接使用
+
+### 退款完成后修改范围
+
+| 联动项 | 是否发生 |
+|--------|----------|
+| 修改商城订单退款状态 | **否**（系统不操作 trade 模块） |
+| 修改 Delta 服务订单 | **否**（退款记录独立于服务单） |
+| 修改售后案件 | **否**（退款记录创建后独立运作） |
+| 修改结算单 | **否**（结算联动在仲裁/取消阶段处理） |
+| 创建追回任务 | **否**（需手动调用 `createRecoveryTask`） |
+| 写入通知（Outbox） | **是**（Phase 10 事件通知买家） |
+
+---
+
+## 64. 第五阶段 Vue3 对接注意事项
+
+### URL 前缀
+
+```typescript
+// ✅ 正确写法
+const url = '/delta/after-sale/page';
+const url = '/delta/refund-record/page';
+
+// ❌ 错误写法
+const url = '/admin-api/delta/after-sale/page';
+```
+
+### 数据类型
+
+| 项 | 类型 |
+|----|------|
+| ID 字段 | `number`（后端 Java `Long`） |
+| 状态值 | `number`（后端 `Integer`） |
+| 金额字段 | `number`（后端 `Integer`，单位：**分**） |
+| 时间字段 | `string`（`LocalDateTime` 序列化） |
+| 证据 URL | `string`（JSON 数组字符串，前端需 JSON.parse） |
+| 操作日志 `operationType` | `string`（CREATE/START/COMPLETE 等） |
+
+### 金额显示
+
+所有金额字段单位为**分**，前端显示时需除以 100。
+
+### 枚举值映射表（新增）
+
+**售后状态（status）**：
+
+| 值 | 名称 | 颜色建议 |
+|----|------|----------|
+| 0 | 待处理 | 橙色/orange |
+| 1 | 已受理 | 蓝色/blue |
+| 2 | 已驳回 | 红色/red |
+| 3 | 已仲裁 | 紫色/purple |
+| 4 | 已关闭 | 灰色/gray |
+
+**售后类型（afterSaleType）**：
+
+| 值 | 名称 |
+|----|------|
+| 1 | 服务质量问题 |
+| 2 | 服务与描述不符 |
+| 3 | 打手未履约 |
+| 4 | 其他 |
+
+**仲裁决定（decisionType）**：
+
+| 值 | 名称 | 说明 |
+|----|------|------|
+| 0 | 不退款 | 驳回买家诉求 |
+| 1 | 全额退款 | 全额退还给买家 |
+| 2 | 部分退款 | 按比例退还给买家 |
+| 3 | 继续服务 | 要求打手重新服务 |
+
+**退款状态（refundStatus）**：
+
+| 值 | 名称 | 颜色建议 |
+|----|------|----------|
+| 0 | 待人工退款 | 橙色/orange |
+| 1 | 人工退款处理中 | 蓝色/blue |
+| 2 | 人工退款已完成 | 绿色/green |
+| 3 | 已取消 | 灰色/gray |
+| 4 | 人工退款失败 | 红色/red |
+
+**退款方式（refundMethod）**：
+
+| 值 | 名称 |
+|----|------|
+| 1 | 人工微信 |
+| 2 | 银行卡 |
+| 3 | 支付宝 |
+| 4 | 其他 |
+
+**退款日志操作类型（operationType）**：
+
+| 值 | 名称 |
+|----|------|
+| `CREATE` | 创建退款记录 |
+| `START` | 开始处理 |
+| `COMPLETE` | 退款完成 |
+| `FAIL` | 退款失败 |
+| `RETRY` | 重新处理 |
+| `CANCEL` | 撤销退款 |
+
+### 特殊注意事项
+
+1. **售后和退款返回 DO**：`DeltaAfterSaleController` 和 `DeltaRefundRecordController` 的分页/详情接口直接返回 DO（数据库实体），包含 `tenantId`、`deleted`、`creator`、`updater` 等管理字段，前端无需使用。
+
+2. **证据字段**：`evidenceUrls` 和 `proofUrls` 是 JSON 数组字符串（如 `["url1","url2"]`），前端使用前需 `JSON.parse()`。
+
+3. **仲裁必须有抉择**：仲裁提交时 `decisionType` 为必填项，需明确选择 0-3 四种决定之一。
+
+4. **退款完成必须提供凭证**：标记退款完成时至少需要外部参考号、凭证 URL 或备注三者之一，否则接口报错。
+
+5. **不调用第三方退款**：本系统退款记录为**纯记账**，管理员需线下执行转账后回来标记。
+
+6. **退款失败后可以重试**：retry 操作会清除失败信息回到待处理状态，重新开始整个退款流程。
+
+7. **售后 evidence 无独立接口**：凭证图片在 `evidenceUrls` 字段中已经包含，无需额外调用证据列表接口。
+
+8. **仲裁金额逻辑**：`workerDeductionAmount + platformBearAmount` 合计不能超过 `refundAmount`。
+
+---
+
+## 65. 第五阶段后端尚未提供的内容
+
+| 内容 | 说明 |
+|------|------|
+| 售后独立证据查询接口 | 证据 URL 内嵌在 `evidenceUrls` 字段（JSON 数组），无独立接口 |
+| 售后仲裁记录查询 API | 仲裁记录仅内部使用，**没有暴露为 Admin API**（可在后台通过详情查看） |
+| 售后操作日志独立接口 | 操作记录写入订单操作日志，无售后独立的日志查询接口 |
+| 售后时间线 | 不存在独立的售后时间线 API |
+| 后台主动创建售后申请 | 不存在（只有买家 App 可以提交，管理员通过 `arbitrate` 接口也有仲裁能力） |
+| `reopen`（重开售后） | 不存在 |
+| 退款记录导出 | 不存在 |
+| 退款记录统计/汇总 | 不存在 |
+| 自动调用第三方退款 API | **不存在且不会存在**（退款模块设计就是纯人工线下操作） |
+| 退款重试次数限制 | 无限制（retry 没有最大次数校验） |
+| 后台主动创建退款记录 | 不存在（退款记录由取消审批通过或仲裁时自动创建） |
+| 退款来源枚举 | 不存在独立的 `refundSource` 字段（来源通过 `afterSaleId` 关联推断） |
+
+---
+
+## 66. 追回任务模块说明
+
+**源文件**：`DeltaFundRecoveryController.java`、`DeltaServiceOrderPhase9CoreService.java`
+
+| 项 | 值 |
+|---|---|
+| Controller 类名 | `DeltaFundRecoveryController` |
+| `@RequestMapping` | `/delta/fund-recovery` |
+| 完整后端路径前缀 | `/admin-api/delta/fund-recovery` |
+| Vue 前端应使用路径前缀 | `/delta/fund-recovery` |
+| 模块中文名 | 人工追回任务管理（Phase 9） |
+| 数据库表 | `delta_fund_recovery` |
+| 日志表 | `delta_fund_recovery_log` |
+| 单号前缀 | `DFR`（Redis 编号生成） |
+
+### 模块说明
+
+本模块管理**人工追回任务**，用于从已打款打手处追回资金。追回任务来源于：
+
+- **售后仲裁**：当仲裁判定打手有责任（`workerDeductionAmount > 0`）且结算已打款时，后台管理员可手动生成追回任务
+- **后台手动补生成**：管理员可在售后仲裁完成后，通过 `generate` 接口手动创建追回任务
+
+> ⚠️ **注意**：追回任务是**独立模块**，非退款记录或结算的附属操作。追回只针对**已打款结算**。
+
+### ⚠️ 追回是否真实调用第三方扣款
+
+**否**。本模块是纯人工记账，**不调用微信/支付宝等第三方支付扣款 API**。管理员需线下追回后回系统记录。追回金额**不联动打手账户余额**。
+
+### 架构
+
+追回业务逻辑全部集中在 `DeltaServiceOrderPhase9CoreService`（无独立的 Service 接口/实现类），直接由 Controller 调用。
+
+---
+
+## 67. 追回任务状态枚举
+
+**源文件**：`RecoveryStatusEnum.java`
+
+| 状态值 | 枚举常量 | 中文名称 | 是否终态 | 说明 |
+|--------|----------|----------|----------|------|
+| `0` | `PENDING` | 待处理 | 否 | 生成后初始状态，可开始或取消 |
+| `1` | `PROCESSING` | 处理中 | 否 | 开始追回后，可记录金额或标记失败 |
+| `2` | `PARTIALLY_RECOVERED` | 部分追回 | 否 | 已追回部分金额，可继续记录或标记失败 |
+| `3` | `RECOVERED` | 已全部追回 | **是** | 累计金额 ≥ 应追回金额 |
+| `4` | `FAILED` | 追回失败 | 否 | 可从失败重试 |
+| `5` | `CANCELED` | 已取消 | **是** | 仅可从 PENDING 取消 |
+
+### 追回操作日志类型枚举
+
+**源文件**：`RecoveryOperationTypeEnum.java`
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `GENERATE` | `GENERATE` | 生成追回任务 |
+| `START` | `START` | 开始追回 |
+| `RECORD_PARTIAL` | `RECORD_PARTIAL` | 记录部分追回 |
+| `RECORD_COMPLETE` | `RECORD_COMPLETE` | 记录全部追回 |
+| `FAIL` | `FAIL` | 标记追回失败 |
+| `RETRY` | `RETRY` | 重试追回 |
+| `CANCEL` | `CANCEL` | 取消追回任务 |
+
+---
+
+## 68. 追回来源和方式枚举
+
+### 追回来源
+
+**不存在独立的 `RecoverySourceEnum`**。追回任务的来源通过关联字段区分：
+
+| 字段 | 关联 |
+|------|------|
+| `afterSaleId` + `arbitrationId` | 售后仲裁 → 追回 |
+| `settlementId` | 已打款结算 → 追回 |
+
+所有追回任务均来源于仲裁后已打款结算，不存在"退款追回"、"手动创建"等其他来源。
+
+### 追回方式
+
+**不存在独立的 `RecoveryMethodEnum`**。追回方式使用 `RefundMethodEnum`（与退款共用）：
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `1` | `WECHAT` | 人工微信 |
+| `2` | `BANK_CARD` | 银行卡 |
+| `3` | `ALIPAY` | 支付宝 |
+| `4` | `OTHER` | 其他 |
+
+---
+
+## 69. 追回任务状态矩阵
+
+**源文件**：`DeltaServiceOrderPhase9CoreService.java` + `RecoveryStatusEnum.java`
+
+| 当前状态 | generate | start | record(部分) | record(全部) | fail | retry | cancel |
+|----------|----------|-------|-------------|-------------|------|-------|--------|
+| 0 (待处理) | N/A | **允许** →1 | 不允许 | 不允许 | 不允许 | 不允许 | **允许** →5 |
+| 1 (处理中) | N/A | 不允许 | **允许** →2 | **允许** →3 | **允许** →4 | 不允许 | 不允许 |
+| 2 (部分追回) | N/A | 不允许 | **允许** →2 | **允许** →3 | **允许** →4 | 不允许 | 不允许 |
+| 3 (已全部追回) | N/A | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+| 4 (追回失败) | N/A | 不允许 | 不允许 | 不允许 | 不允许 | **允许** →0 | 不允许 |
+| 5 (已取消) | N/A | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 | 不允许 |
+
+> `generate` 是**创建新任务**操作（而非对已有任务操作），因此不在矩阵中。
+
+---
+
+## 70. 追回任务分页
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 分页查询追回任务 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/fund-recovery/page` |
+| Vue 前端路径 | `/delta/fund-recovery/page` |
+| 权限编码 | `delta:fund-recovery:query` |
+| ReqVO | `DeltaFundRecoveryPageReqVO`（继承 `PageParam`） |
+| RespVO | `CommonResult<PageResult<DeltaFundRecoveryDO>>` |
+
+> ⚠️ **注意**：Admin 端分页直接返回 `DeltaFundRecoveryDO`（数据库实体），**不经过 VO 转换**。
+
+### Query 参数
+
+**源文件**：`DeltaFundRecoveryPageReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `pageNo` | `Long` | 否 | 页码 |
+| `pageSize` | `Long` | 否 | 每页条数 |
+| `recoveryNo` | `String` | 否 | 追回单号 |
+| `serviceOrderNo` | `String` | 否 | 服务单号 |
+| `afterSaleNo` | `String` | 否 | 售后单号 |
+| `workerId` | `Long` | 否 | 打手 ID |
+| `recoveryStatus` | `Integer` | 否 | 追回状态 |
+| `handlerId` | `Long` | 否 | 处理人 ID |
+| `createTime` | `LocalDateTime[]` | 否 | 创建时间范围 |
+
+### 响应字段（DeltaFundRecoveryDO）
+
+**源文件**：`DeltaFundRecoveryDO.java`
+
+| 字段名 | Java 类型 | 可能为空 | 含义 |
+|--------|-----------|----------|------|
+| `id` | `Long` | 否 | 追回任务 ID |
+| `recoveryNo` | `String` | 否 | 追回单号（DFR 开头） |
+| `serviceOrderId` | `Long` | 否 | 服务订单 ID |
+| `afterSaleId` | `Long` | 否 | 售后案件 ID |
+| `arbitrationId` | `Long` | 否 | 仲裁记录 ID |
+| `settlementId` | `Long` | 否 | 结算记录 ID |
+| `workerId` | `Long` | 否 | 打手 ID |
+| `responsibilityType` | `Integer` | 是 | 责任归属 |
+| `shouldRecoverAmount` | `Integer` | 否 | 应追回金额（**单位：分**） |
+| `recoveredAmount` | `Integer` | 否 | 已追回金额（**单位：分**） |
+| `remainingAmount` | `Integer` | 否 | 剩余金额（**单位：分**） |
+| `recoveryStatus` | `Integer` | 否 | 追回状态（见第 67 节） |
+| `recoveryMethod` | `Integer` | 是 | 追回方式（见第 68 节） |
+| `externalReference` | `String` | 是 | 外部参考号 |
+| `proofUrls` | `String` | 是 | 凭证 URL（JSON 数组字符串） |
+| `handlerId` | `Long` | 是 | 处理人 ID |
+| `handleTime` | `LocalDateTime` | 是 | 开始处理时间 |
+| `completedTime` | `LocalDateTime` | 是 | 追回完成时间 |
+| `failureReason` | `String` | 是 | 追回失败原因 |
+| `remark` | `String` | 是 | 备注 |
+| `createTime` | `LocalDateTime` | 否 | 创建时间 |
+| `creator` | `String` | 是 | 创建者 |
+| `updater` | `String` | 是 | 更新者 |
+| `tenantId` | `Long` | 否 | 租户 ID |
+| `deleted` | `Boolean` | 否 | 是否删除 |
+
+### 不存在的字段
+
+| 字段名 | 说明 |
+|--------|------|
+| `recoverySource` | 不存在（来源通过 afterSaleId + settlementId 推断） |
+| `refundRecordId` | 不存在 |
+| `refundNo` | 不存在 |
+| `settlementNo` | 不存在 |
+| `serviceOrderNo` | 不存在 |
+| `workerNo` | 不存在 |
+| `workerName` | 不存在 |
+| `originalPaidAmount` | 不存在（使用 `shouldRecoverAmount`） |
+| `targetRecoveryAmount` | 不存在（即 `shouldRecoverAmount`） |
+| `retryCount` | **不存在**（无重试次数限制） |
+| `startTime` | 不存在（使用 `handleTime`） |
+| `updateTime` | 不存在 |
+
+### 可选 RespVO
+
+后端有 `DeltaFundRecoveryRespVO`（含 `recoveryStatusName` 状态名称拼接），但 Admin Controller 中**未使用**，分页和详情都直接返回 DO。
+
+### 排序规则
+
+- 按 `id` **降序**排列
+
+---
+
+## 71. 追回任务详情
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询追回任务详情 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/fund-recovery/get` |
+| Vue 前端路径 | `/delta/fund-recovery/get` |
+| 权限编码 | `delta:fund-recovery:query` |
+| RespVO | `CommonResult<DeltaFundRecoveryDO>` |
+
+> ⚠️ **注意**：详情也**直接返回 DO**，与分页结构相同。
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 追回任务 ID |
+
+### 响应字段
+
+同 **第 70 节 响应字段**（`DeltaFundRecoveryDO`）。
+
+---
+
+## 72. 追回任务日志
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询追回操作日志 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/fund-recovery/logs` |
+| Vue 前端路径 | `/delta/fund-recovery/logs` |
+| 权限编码 | `delta:fund-recovery:query` |
+| RespVO | `CommonResult<List<DeltaFundRecoveryLogDO>>` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 追回任务 ID |
+
+### 响应字段（DeltaFundRecoveryLogDO）
+
+**源文件**：`DeltaFundRecoveryLogDO.java`
+
+| 字段名 | Java 类型 | 含义 |
+|--------|-----------|------|
+| `id` | `Long` | 日志 ID |
+| `recoveryId` | `Long` | 追回任务 ID |
+| `serviceOrderId` | `Long` | 服务订单 ID |
+| `settlementId` | `Long` | 结算记录 ID |
+| `operationType` | `String` | 操作类型（GENERATE/START/RECORD_PARTIAL/RECORD_COMPLETE/FAIL/RETRY/CANCEL） |
+| `beforeStatus` | `Integer` | 操作前状态（注：日志写入时机在状态更新前，beforeStatus 为旧状态） |
+| `afterStatus` | `Integer` | 操作后状态（注：与 beforeStatus 同为旧状态，需结合 operationType 推断） |
+| `operatorId` | `Long` | 操作人 ID |
+| `content` | `String` | 日志内容 |
+| `amount` | `Integer` | 本次追回金额（分） |
+| `totalRecoveredAmount` | `Integer` | 累计已追回金额（分） |
+| `remainingAmount` | `Integer` | 剩余金额（分） |
+| `createTime` | `LocalDateTime` | 创建时间 |
+
+---
+
+## 73. 生成追回任务
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 生成追回任务 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/fund-recovery/generate` |
+| Vue 前端路径 | `/delta/fund-recovery/generate` |
+| 权限编码 | `delta:fund-recovery:generate` |
+| ReqVO | `DeltaFundRecoveryGenerateReqVO` |
+| 响应 | `CommonResult<DeltaFundRecoveryDO>`（返回创建后的追回任务） |
+
+### Request Body
+
+**源文件**：`DeltaFundRecoveryGenerateReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `afterSaleId` | `Long` | **是** | `@NotNull` | 售后案件 ID |
+
+### 业务规则
+
+1. 售后案件必须存在（否则 `AFTER_SALE_NOT_EXISTS`，1_020_013_000）
+2. 售后必须有仲裁记录（否则 `ARBITRATION_ALREADY_EXISTS`，1_020_014_003，复用为"未仲裁"）
+3. 仲裁的 `workerDeductionAmount` 必须 > 0（否则返回 `null`，不创建任务）
+4. 售后对应的结算记录必须存在且状态为 **PAID**（否则不创建任务）
+5. 同一仲裁只能有一个追回任务（`RECOVERY_ALREADY_EXISTS`，1_020_018_001）
+6. **应追回金额** = `arbitration.workerDeductionAmount`
+7. 生成时：`recoveredAmount = 0`，`remainingAmount = shouldRecoverAmount`
+8. Phase 10：发布 `RECOVERY_CREATED` 事件 → 通知后台
+
+### 响应
+
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "data": {
+    "id": 1,
+    "recoveryNo": "DFR202406010001",
+    "shouldRecoverAmount": 5000,
+    "recoveredAmount": 0,
+    "remainingAmount": 5000,
+    "recoveryStatus": 0,
+    ...
+  }
+}
+```
+
+---
+
+## 74. 开始处理
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 开始追回 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/fund-recovery/start` |
+| Vue 前端路径 | `/delta/fund-recovery/start` |
+| 权限编码 | `delta:fund-recovery:process` |
+| ReqVO | `DeltaFundRecoveryStartReqVO` |
+
+### Request Body
+
+**源文件**：`DeltaFundRecoveryStartReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 追回任务 ID |
+| `remark` | `String` | 否 | 备注 |
+
+### 业务规则
+
+1. 追回任务必须存在（`RECOVERY_NOT_EXISTS`，1_020_018_000）
+2. 当前状态必须是 `0`（待处理），否则 `RECOVERY_STATUS_CANNOT_START`（1_020_018_002）
+3. **操作后目标状态**：`1`（处理中）
+4. CAS 更新：记录 `handlerId`、`handleTime`、`remark`
+5. 写追回日志（`START`）
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 75. 记录追回结果（部分/全部追回）
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 记录追回结果 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/fund-recovery/record` |
+| Vue 前端路径 | `/delta/fund-recovery/record` |
+| 权限编码 | `delta:fund-recovery:process` |
+| ReqVO | `DeltaFundRecoveryRecordReqVO` |
+
+> ⚠️ **注意**：本接口同时支持**部分追回**和**全部追回**，系统根据累计金额自动判断。
+
+### Request Body
+
+**源文件**：`DeltaFundRecoveryRecordReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 校验规则 | 含义 |
+|--------|-----------|------|----------|------|
+| `id` | `Long` | **是** | `@NotNull` | 追回任务 ID |
+| `recoveredAmount` | `Integer` | **是** | `@NotNull` | 本次追回金额（**单位：分**） |
+| `recoveryMethod` | `Integer` | 否 | 无 | 追回方式：1-人工微信 2-银行卡 3-支付宝 4-其他 |
+| `externalReference` | `String` | 否 | 无 | 外部参考号 |
+| `proofUrls` | `List<String>` | 否 | 无 | 凭证 URL 列表 |
+| `remark` | `String` | 否 | 无 | 备注 |
+
+### 业务规则
+
+1. `recoveredAmount` 必须 > 0（`RECOVERY_AMOUNT_MUST_POSITIVE`，1_020_018_007）
+2. 当前状态必须是 `1`（处理中）或 `2`（部分追回），否则 `RECOVERY_STATUS_CANNOT_RECORD`（1_020_018_003）
+3. 累计金额不能超过应追回金额（`RECOVERY_AMOUNT_EXCEED`，1_020_018_008）
+4. 支持**多次部分追回**（状态保持 `PARTIALLY_RECOVERED`）
+5. 当 `recoveredAmount + 已追回 ≥ shouldRecoverAmount` 时，自动完成（→ `RECOVERED`）
+6. 全部追回时记录 `completedTime`
+7. 写追回日志（`RECORD_PARTIAL` 或 `RECORD_COMPLETE`）
+
+### 金额规则详细说明
+
+| 规则 | 值 |
+|------|-----|
+| 金额单位 | **分** |
+| 最小金额 | > 0（不允许 0） |
+| 是否允许超额 | **否**（累计 ≤ `shouldRecoverAmount`） |
+| 是否自动累计 `recoveredAmount` | **是**（new = old + 本次） |
+| 是否自动计算 `remainingAmount` | **是**（remaining = shouldRecover - newRecovered） |
+| 剩余为 0 时是否自动完成 | **是**（自动切换为 `RECOVERED` 终态） |
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 76. 全部追回
+
+**无独立的 "全部追回" 接口**。当 `record` 接口记录追回金额后累计达到 `shouldRecoverAmount` 时，系统自动将状态变为 `RECOVERED(3)`。参见第 75 节。
+
+---
+
+## 77. 标记失败
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 标记追回失败 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/fund-recovery/fail` |
+| Vue 前端路径 | `/delta/fund-recovery/fail` |
+| 权限编码 | `delta:fund-recovery:process` |
+| ReqVO | `DeltaFundRecoveryFailReqVO` |
+
+### Request Body
+
+**源文件**：`DeltaFundRecoveryFailReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 追回任务 ID |
+| `reason` | `String` | 是 | 失败原因（不能为空） |
+
+### 业务规则
+
+1. 失败原因不能为空（`RECOVERY_FAIL_REASON_REQUIRED`，1_020_018_010）
+2. 当前状态必须是 `1`（处理中）或 `2`（部分追回），否则 `RECOVERY_STATUS_CANNOT_FAIL`（1_020_018_004）
+3. 部分追回后仍可标记失败
+4. **操作后目标状态**：`4`（追回失败）
+5. **保留已追回金额**，不清零 `recoveredAmount`
+6. 记录 `failureReason`
+7. 写追回日志（`FAIL`）
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 78. 重试追回
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 重试追回 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/fund-recovery/retry` |
+| Vue 前端路径 | `/delta/fund-recovery/retry` |
+| 权限编码 | `delta:fund-recovery:process` |
+| ReqVO | `DeltaFundRecoveryRetryReqVO` |
+
+### Request Body
+
+**源文件**：`DeltaFundRecoveryRetryReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 追回任务 ID |
+| `remark` | `String` | 否 | 备注 |
+
+### 业务规则
+
+1. 当前状态必须是 `4`（追回失败），否则 `RECOVERY_STATUS_CANNOT_RETRY`（1_020_018_005）
+2. **操作后目标状态**：`0`（待处理）
+3. 清除 `failureReason`、`handlerId`、`handleTime`
+4. **保留已追回金额**（不清零 `recoveredAmount` 和 `remainingAmount`）
+5. **无重试次数限制**
+6. 写追回日志（`RETRY`）
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 79. 取消追回
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 取消追回任务 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/fund-recovery/cancel` |
+| Vue 前端路径 | `/delta/fund-recovery/cancel` |
+| 权限编码 | `delta:fund-recovery:cancel` |
+| ReqVO | `DeltaFundRecoveryCancelReqVO` |
+
+### Request Body
+
+**源文件**：`DeltaFundRecoveryCancelReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 追回任务 ID |
+| `reason` | `String` | 是 | 撤销原因（不能为空） |
+
+### 业务规则
+
+1. 撤销原因不能为空（`RECOVERY_CANCEL_REASON_REQUIRED`，1_020_018_012）
+2. 当前状态必须是 `0`（待处理），否则 `RECOVERY_STATUS_CANNOT_CANCEL`（1_020_018_006）
+3. **已有追回金额（>0）时不能取消**（`RECOVERY_HAS_AMOUNT_CANNOT_CANCEL`，1_020_018_009）
+4. **操作后目标状态**：`5`（已取消，终态）
+5. 写追回日志（`CANCEL`）
+
+### 响应
+
+```json
+{ "code": 0, "msg": "成功", "data": true }
+```
+
+---
+
+## 80. 追回任务错误码
+
+**源文件**：`ErrorCodeConstants.java`
+
+### 追回任务（1-020-018-xxx）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020018000` | `RECOVERY_NOT_EXISTS` | 追回任务不存在 |
+| `1020018001` | `RECOVERY_ALREADY_EXISTS` | 追回任务已经存在（同一仲裁不可重复生成） |
+| `1020018002` | `RECOVERY_STATUS_CANNOT_START` | 追回状态不允许开始处理 |
+| `1020018003` | `RECOVERY_STATUS_CANNOT_RECORD` | 追回状态不允许记录金额 |
+| `1020018004` | `RECOVERY_STATUS_CANNOT_FAIL` | 追回状态不允许标记失败 |
+| `1020018005` | `RECOVERY_STATUS_CANNOT_RETRY` | 追回状态不允许重试 |
+| `1020018006` | `RECOVERY_STATUS_CANNOT_CANCEL` | 追回状态不允许取消 |
+| `1020018007` | `RECOVERY_AMOUNT_MUST_POSITIVE` | 追回金额必须大于零 |
+| `1020018008` | `RECOVERY_AMOUNT_EXCEED` | 累计追回金额超过应追回金额 |
+| `1020018009` | `RECOVERY_HAS_AMOUNT_CANNOT_CANCEL` | 已有追回金额不能取消任务 |
+| `1020018010` | `RECOVERY_FAIL_REASON_REQUIRED` | 追回失败原因不能为空 |
+| `1020018011` | `RECOVERY_CROSS_TENANT` | 跨租户访问被拒绝 |
+| `1020018012` | `RECOVERY_CANCEL_REASON_REQUIRED` | 撤销原因不能为空 |
+| `1020018013` | `RECOVERY_ALREADY_COMPLETED` | 追回已完成，不能重复操作 |
+
+### 关联错误码
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020016000` | `SETTLEMENT_PAID_NEED_MANUAL_RECOVERY` | 已打款结算需要人工追回（Phase 8 联动） |
+
+---
+
+## 81. 追回任务并发和幂等规则
+
+### 并发控制矩阵
+
+| 接口 | 并发控制方式 | 锁粒度 | 冲突处理 |
+|------|-------------|--------|----------|
+| generate | 业务校验（唯一键） | 仲裁记录级 | `RECOVERY_ALREADY_EXISTS` |
+| start | CAS 乐观锁 | 单行（id + oldStatus） | `RECOVERY_STATUS_CANNOT_START` |
+| record | CAS 乐观锁（含金额） | 单行（id + oldStatus） | `RECOVERY_STATUS_CANNOT_RECORD` |
+| fail | CAS 乐观锁 | 单行（id + oldStatus） | `RECOVERY_STATUS_CANNOT_FAIL` |
+| retry | CAS 乐观锁 | 单行（id + oldStatus） | `RECOVERY_STATUS_CANNOT_RETRY` |
+| cancel | CAS 乐观锁 | 单行（id + oldStatus） | `RECOVERY_STATUS_CANNOT_CANCEL` |
+
+### CAS 机制
+
+- 状态 CAS：`DeltaFundRecoveryMapper.updateStatusCas(id, newStatus, oldStatus, Consumer)`
+  - SQL：`WHERE id = ? AND recovery_status = oldStatus`
+  - 返回 `rows != 1` 视为冲突
+- 状态+金额 CAS：`DeltaFundRecoveryMapper.updateStatusCasWithAmount(id, newStatus, oldStatus, newRecoveredAmount, newRemaining, Consumer)`
+  - 同时更新 `recovered_amount` 和 `remaining_amount`
+
+### 分布式锁
+
+- 追回模块**没有使用 Redisson 分布式锁**。并发控制**完全依赖 CAS 乐观锁**。
+
+### 事务
+
+- 所有追回操作接口均在 `@Transactional(rollbackFor = Exception.class)` 内执行
+- 操作内会写入追回日志（`DeltaFundRecoveryLogDO`）
+
+### 幂等规则
+
+| 接口 | 幂等性 |
+|------|--------|
+| generate | **防重**：同一仲裁只能有一个追回任务 |
+| start | **不幂等**：重复调用因 CAS 失败抛 `RECOVERY_STATUS_CANNOT_START` |
+| record | **不幂等**：重复调用因 CAS 失败抛 `RECOVERY_STATUS_CANNOT_RECORD` |
+| fail | **不幂等**：重复调用因 CAS 失败抛 `RECOVERY_STATUS_CANNOT_FAIL` |
+| retry | **不幂等**：重复调用因 CAS 失败抛 `RECOVERY_STATUS_CANNOT_RETRY` |
+| cancel | **不幂等**：重复调用因 CAS 失败抛 `RECOVERY_STATUS_CANNOT_CANCEL` |
+
+### 多次部分追回并发
+
+- 每次 `record` 使用 CAS 验证当前状态 + 原子更新累计金额
+- 并发 `record` 调用中，只有一个能成功（先 CAS 匹配的），其余因状态已变而失败
+
+### 多租户
+
+- `DeltaFundRecoveryDO` 继承 `TenantBaseDO`
+- 分页查询由 MyBatis-Plus 自动带 `tenant_id` 过滤
+- `RECOVERY_CROSS_TENANT`（1_020_018_011）在 ErrorCodeConstants 中定义
+
+---
+
+## 82. 已打款结算追回说明
+
+### 触发条件
+
+结算追回仅针对 **`SettlementStatusEnum.PAID`**（已打款，值为 3）的结算单。
+
+### `needManualRecovery` 标记
+
+**源文件**：`DeltaServiceOrderPhase8CoreService.cancelSettlementIfUnpaid()`（第 672-714 行）
+
+当取消审批通过或全额退款仲裁后，系统尝试取消结算：
+
+| 结算状态 | 行为 |
+|----------|------|
+| `PENDING_REVIEW`（待审核） | 直接取消结算 |
+| `APPROVED`（审核通过） | 直接取消结算 |
+| `REJECTED`（审核驳回） | 直接取消结算 |
+| **`PAID`（已打款）** | **不能自动取消**，设置 `DeltaAfterSaleDO.needManualRecovery = true` |
+
+### 触发追回的业务场景
+
+| 触发源 | 是否自动生成追回任务 |
+|--------|---------------------|
+| 取消申请审批通过 + 结算已打款 | **否**（仅设置 `needManualRecovery = true`） |
+| 售后仲裁 + 全额退款 + 结算已打款 | **否**（仅设置 `needManualRecovery = true`） |
+| 管理员后台手动 `generate` | **是**（手动调用后生成） |
+
+> ⚠️ **系统不自动生成追回任务**。即使 `needManualRecovery = true`，也需管理员在后台手动调用 `generate` 接口。
+
+### 追回任务与结算单关系
+
+| 规则 | 值 |
+|------|-----|
+| 是否一一对应 | **否**。一个结算单可以有多个追回任务（通过 `settlementId` 列表查询） |
+| 是否允许一个结算多任务 | **是**（Mapper 提供了 `selectListBySettlementId()` 方法） |
+| 应追回金额来源 | `arbitration.workerDeductionAmount`（仲裁时管理员指定的打手扣减金额） |
+
+---
+
+## 83. 结算追回关联规则
+
+### 数据关联
+
+```
+DeltaFundRecoveryDO
+├── afterSaleId ──────→ DeltaAfterSaleDO.id
+├── arbitrationId ────→ DeltaAfterSaleArbitrationDO.id
+├── settlementId ─────→ DeltaWorkerSettlementDO.id
+├── workerId ─────────→ DeltaWorkerDO.id
+└── serviceOrderId ───→ DeltaServiceOrderDO.id
+```
+
+### 生成追回的流程
+
+1. 售后仲裁 → `arbitration.workerDeductionAmount > 0`
+2. 结算已打款（`PAID`）
+3. 管理员手动调用 `POST /delta/fund-recovery/generate` → 传入 `afterSaleId`
+4. 系统自动查找仲裁记录、结算记录、验证条件后创建追回任务
+
+---
+
+## 84. 结算追回金额规则
+
+| 规则 | 说明 |
+|------|------|
+| Java 类型 | `Integer` |
+| 单位 | **分** |
+| 应追回金额确定 | `arbitration.workerDeductionAmount`（仲裁时指定） |
+| 是否允许超额追回 | **否**（累计 ≤ `shouldRecoverAmount`） |
+| 是否允许负数 | **否**（`recoveredAmount` 必须 > 0） |
+| 是否允许 0 | **否**（记录追回时必须 > 0） |
+| 多次部分追回 | **支持**（状态保持 `PARTIALLY_RECOVERED`） |
+| 自动累计 | **是**（每次 `record` 自动累加到 `recoveredAmount`） |
+| 自动计算剩余 | **是**（`remainingAmount = shouldRecoverAmount - recoveredAmount`） |
+
+### 是否联动其他系统
+
+| 联动项 | 是否发生 |
+|--------|----------|
+| 是否调用支付平台扣款 | **否**（纯人工记账） |
+| 是否影响打手余额 | **否** |
+| 全部追回后修改结算状态 | **否** |
+| 清除 `needManualRecovery` | **否** |
+| 通知打手 | **否**（Phase 10 通知仅发给后台管理员） |
+| 创建 Outbox 事件 | **是**（`RECOVERY_CREATED` 事件） |
+
+---
+
+## 85. 结算追回状态联动
+
+| 场景 | 追回状态变化 | 结算状态变化 |
+|------|-------------|-------------|
+| 生成追回任务 | → `PENDING` | 不变 |
+| 开始追回 | → `PROCESSING` | 不变 |
+| 记录部分追回 | → `PARTIALLY_RECOVERED` | 不变 |
+| 累计全部追回 | → `RECOVERED` | **不变** |
+| 标记失败 | → `FAILED` | 不变 |
+| 重试 | → `PENDING` | 不变 |
+| 取消 | → `CANCELED` | 不变 |
+
+> **追回任务操作不影响结算单状态**。结算单在打款后保持 `PAID` 状态不变。
+
+---
+
+## 86. 第六阶段 Vue3 对接注意事项
+
+### URL 前缀
+
+```typescript
+// ✅ 正确写法
+const url = '/delta/fund-recovery/page';
+const url = '/delta/fund-recovery/generate';
+
+// ❌ 错误写法
+const url = '/admin-api/delta/fund-recovery/page';
+```
+
+### 数据类型
+
+| 项 | 类型 |
+|----|------|
+| ID 字段 | `number`（后端 Java `Long`） |
+| 状态值 | `number`（后端 `Integer`） |
+| 金额字段 | `number`（后端 `Integer`，单位：**分**） |
+| 时间字段 | `string`（`LocalDateTime` 序列化） |
+| 凭证 URL | `string`（JSON 数组字符串，前端需 `JSON.parse`） |
+| 日志 `operationType` | `string`（GENERATE/START/RECORD_PARTIAL 等） |
+
+### 枚举值映射表（新增）
+
+**追回状态（recoveryStatus）**：
+
+| 值 | 名称 | 颜色建议 |
+|----|------|----------|
+| 0 | 待处理 | 橙色/orange |
+| 1 | 处理中 | 蓝色/blue |
+| 2 | 部分追回 | 青蓝色/cyan |
+| 3 | 已全部追回 | 绿色/green |
+| 4 | 追回失败 | 红色/red |
+| 5 | 已取消 | 灰色/gray |
+
+**追回方式（recoveryMethod）**：
+
+| 值 | 名称 |
+|----|------|
+| 1 | 人工微信 |
+| 2 | 银行卡 |
+| 3 | 支付宝 |
+| 4 | 其他 |
+
+**追回日志操作类型（operationType）**：
+
+| 值 | 名称 |
+|----|------|
+| `GENERATE` | 生成追回任务 |
+| `START` | 开始追回 |
+| `RECORD_PARTIAL` | 记录部分追回 |
+| `RECORD_COMPLETE` | 记录全部追回 |
+| `FAIL` | 标记追回失败 |
+| `RETRY` | 重试追回 |
+| `CANCEL` | 取消追回任务 |
+
+### 特殊注意事项
+
+1. **返回 DO**：`DeltaFundRecoveryController` 的分页/详情接口直接返回 DO（包含 `tenantId`、`deleted` 等管理字段），前端无需使用。
+
+2. **金额单位**：所有金额字段（`shouldRecoverAmount`、`recoveredAmount`、`remainingAmount`）单位为**分**，前端显示时需除以 100。
+
+3. **追回是纯人工记账**：不调用任何第三方支付扣款 API，管理员需线下追回后回来 `record` 记录。
+
+4. **不影响打手余额**：追回金额仅记账，不打手账户余额。
+
+5. **部分/全部追回是同一个接口**：`POST /record` 同时支持部分和全部，系统根据累计金额自动判断。
+
+6. **生成后不自动开始**：`generate` 创建任务后状态为 `PENDING`，需先 `start` 再 `record`。
+
+7. **取消仅限待处理**：一旦开始追回（转 `PROCESSING`），只能完成或标记失败，不能取消。
+
+8. **已有追回金额不能取消**：即使状态回退到 `PENDING`（如 retry 后），若 `recoveredAmount > 0` 也无法取消。
+
+9. **重试无次数限制**：失败后可以无限次重试。
+
+10. **追回任务不修改结算状态**：即使全部追回，结算仍保持 `PAID` 状态不变。
+
+11. **追回任务需要先有仲裁**：生成追回时必须有仲裁记录且 `workerDeductionAmount > 0`。
+
+12. **仅针对已打款结算**：未打款的结算通过取消结算流程处理，不需生成追回任务。
+
+---
+
+## 87. 第六阶段后端尚未提供的内容
+
+| 内容 | 说明 |
+|------|------|
+| 追回来源枚举 | 不存在独立的 `RecoverySourceEnum` |
+| 追回方式枚举 | 不存在独立的 `RecoveryMethodEnum`（复用 `RefundMethodEnum`） |
+| 独立的"全部追回"接口 | 不存在（通过 `record` 接口自动完成） |
+| 追回任务自动生成 | 不存在（需管理员手动 `generate`） |
+| 追回重试次数限制 | **无限制** |
+| 追回联动打手余额 | **不存在**（纯记账，不影响余额） |
+| 追回完成修改结算状态 | **不存在**（结算保持 `PAID`） |
+| 追回调用第三方扣款 API | **不存在且不会存在** |
+| 追回任务导出 | 不存在 |
+| 追回任务统计/汇总 | 不存在 |
+| 追回通知打手 | 不存在（仅通知后台管理员） |
+| 已打款结算自动创建追回 | 不存在（仅标记 `needManualRecovery`，需手动生成） |
+| 退款追回模块 | 不存在（退款和追回是两个独立模块，退款不触发追回） |
+| 结算单号查询追回 | PageReqVO 无 `settlementNo` 查询条件（需通过 `serviceOrderNo` 间接筛选） |
+
+---
+
+## 88. 第七阶段模块总览
+
+**Phase 10**（领域事件与站内通知体系）由以下子模块组成：
+
+| 子模块 | 数据库表 | Admin Controller | App Controller | 说明 |
+|--------|----------|-----------------|----------------|------|
+| Outbox 事件管理 | `delta_event_outbox` | **有** `DeltaEventOutboxController` | 无 | 人工重试、标记死亡 |
+| 会员站内通知 | `delta_member_notification` | **无** | **有** `AppDeltaNotificationController` | App 端分页、已读管理 |
+| 提醒记录 | `delta_reminder_record` | **无** | 无 | 纯后端冷却控制 |
+| 超时提醒扫描 | 无独立表 | **无** | 无 | Quartz JobHandler 自动执行 |
+| Outbox 消费 | 无独立表 | **无** | 无 | Quartz JobHandler 自动执行 |
+
+### 模块关系
+
+```
+业务操作 → DeltaEventPublisher → delta_event_outbox (PENDING)
+                                      ↓
+                     DeltaEventOutboxConsumeJob (每分钟)
+                                      ↓
+                     DeltaEventOutboxConsumeService.processEvent()
+                                      ↓
+                         模板渲染 → delta_member_notification
+                                      ↓
+                  AppDeltaNotificationController (App端查询)
+
+超时检测：
+DeltaReminderScanJob → DeltaReminderService.scanAndRemind()
+  → 检查各业务超时 → delta_reminder_record (冷却)
+  → delta_member_notification (消息)
+```
+
+### Vue3 管理后台应关注
+
+- **Outbox 事件管理**：唯一有 Admin API 的模块，可查看事件列表/详情、人工重试、标记死亡
+- **通知记录**：仅有 App API（给会员端），**无 Admin 管理接口**
+- **提醒记录**：纯后端机制，**无任何对外 API**
+- **超时任务**：Quartz 自动执行，**无 Admin 管理接口**
+
+---
+
+## 89. Outbox 模块说明
+
+**源文件**：`DeltaEventOutboxController.java`、`DeltaEventOutboxConsumeService.java`
+
+| 项 | 值 |
+|---|---|
+| Controller 类名 | `DeltaEventOutboxController` |
+| `@RequestMapping` | `/delta/event-outbox` |
+| 完整后端路径前缀 | `/admin-api/delta/event-outbox` |
+| Vue 前端应使用路径前缀 | `/delta/event-outbox` |
+| 模块中文名 | Outbox 事件管理 |
+| 数据库表 | `delta_event_outbox` |
+| 事件编号前缀 | `DEV`（`DeltaNoRedisDAO.generateEventOutboxNo()`） |
+
+### 模块说明
+
+Outbox 是**发件箱模式**实现，用于保证业务操作和通知的最终一致性。业务操作（如派单、验收、结算打款）将事件写入 `delta_event_outbox` 表，由定时任务异步消费并创建站内通知。
+
+### Outbox 不存在的子模块
+
+| 子模块 | 说明 |
+|--------|------|
+| 独立日志表 | 不存在。操作日志不单独存储，错误信息写在 `last_error` 字段 |
+| Outbox 事件重新发送（resend） | 不存在。重试仅恢复为 PENDING 等待下次消费，不会立即发送 |
+| Outbox 事件忽略（ignore） | 不存在。仅支持标记死亡（DEAD） |
+| 批量操作 | 不存在。所有操作都是单条 |
+
+---
+
+## 90. Outbox 状态枚举
+
+**源文件**：`EventOutboxStatusEnum.java`
+
+| 状态值 | 枚举常量 | 中文名称 | 是否终态 | 说明 |
+|--------|----------|----------|----------|------|
+| `0` | `PENDING` | 待处理 | 否 | 初始状态，可以被消费 |
+| `1` | `PROCESSING` | 处理中 | 否 | 消费者已认领，30分钟超时自动恢复 |
+| `2` | `SUCCESS` | 成功 | **是** | 通知已创建 |
+| `3` | `FAILED` | 失败 | 否 | 可重试，也可人工重试或标记死亡 |
+| `4` | `DEAD` | 死亡（超过最大重试次数） | **是** | 5次重试后或人工标记 |
+
+### 允许操作判断
+
+| 状态 | `canConsume` (自动消费) | `canRetry` (人工重试) | `canMarkDead` (标记死亡) | `isFinalStatus` |
+|------|------------------------|----------------------|--------------------------|-----------------|
+| PENDING (0) | **是** | 否 | **是** | 否 |
+| PROCESSING (1) | 否 | 否 | 否 | 否 |
+| SUCCESS (2) | 否 | 否 | 否 | **是** |
+| FAILED (3) | **是** | **是** | **是** | 否 |
+| DEAD (4) | 否 | 否 | 否 | **是** |
+
+---
+
+## 91. Outbox 状态矩阵
+
+| 当前状态 | 自动消费 | 人工重试 | 标记死亡 | 目标状态 |
+|----------|---------|---------|---------|----------|
+| PENDING (0) | → PROCESSING (1) | 不允许 | → DEAD (4) | — |
+| PROCESSING (1) | → SUCCESS(2) 或 FAILED(3) | 不允许 | 不允许 | — |
+| FAILED (3) | → PROCESSING (1) | → PENDING (0) | → DEAD (4) | — |
+| SUCCESS (2) | 不允许 | 不允许 | 不允许 | 终态 |
+| DEAD (4) | 不允许 | 不允许 | 不允许 | 终态 |
+
+> 自动消费 = `DeltaEventOutboxConsumeJob` 扫描 PENDING 和 FAILED（达到重试时间）事件，CAS 更新为 PROCESSING 后处理。
+
+---
+
+## 92. Outbox 分页
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 分页查询 Outbox 事件 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/event-outbox/page` |
+| Vue 前端路径 | `/delta/event-outbox/page` |
+| 权限编码 | `delta:event-outbox:query` |
+| ReqVO | `DeltaEventOutboxPageReqVO`（继承 `PageParam`） |
+| RespVO | `CommonResult<PageResult<DeltaEventOutboxRespVO>>` |
+
+> 响应经过 VO 转换（`DeltaEventOutboxRespVO.from()`），`payload` 和 `lastError` 会脱敏截断。
+
+### Query 参数
+
+**源文件**：`DeltaEventOutboxPageReqVO.java`
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `pageNo` | `Long` | 否 | 页码 |
+| `pageSize` | `Long` | 否 | 每页条数 |
+| `eventType` | `String` | 否 | 事件类型（见第111节） |
+| `eventStatus` | `Integer` | 否 | 事件状态（0-4） |
+| `aggregateType` | `String` | 否 | 聚合类型（SERVICE_ORDER/SETTLEMENT/REFUND等） |
+| `aggregateId` | `Long` | 否 | 聚合根 ID |
+| `recipientType` | `String` | 否 | 接收人类型（BUYER/WORKER/ADMIN/SYSTEM） |
+| `createTimeStart` | `LocalDateTime` | 否 | 创建时间开始 |
+| `createTimeEnd` | `LocalDateTime` | 否 | 创建时间结束 |
+
+### 响应字段（DeltaEventOutboxRespVO）
+
+**源文件**：`DeltaEventOutboxRespVO.java`
+
+| 字段名 | Java 类型 | 含义 |
+|--------|-----------|------|
+| `id` | `Long` | 事件 ID |
+| `eventNo` | `String` | 事件编号（DEV 开头） |
+| `eventType` | `String` | 事件类型 |
+| `aggregateType` | `String` | 聚合类型 |
+| `aggregateId` | `Long` | 聚合根 ID |
+| `bizKey` | `String` | 幂等业务键 |
+| `recipientType` | `String` | 接收人类型 |
+| `recipientId` | `Long` | 接收人用户 ID |
+| `eventStatus` | `Integer` | 事件状态（0-4） |
+| `retryCount` | `Integer` | 重试次数 |
+| `nextRetryTime` | `LocalDateTime` | 下次重试时间 |
+| `lastError` | `String` | 最近错误摘要（超过200字符截断） |
+| `templateCode` | `String` | 通知模板编码 |
+| `payload` | `String` | 事件参数 JSON（超过300字符截断脱敏） |
+| `processedTime` | `LocalDateTime` | 处理完成时间 |
+| `createTime` | `LocalDateTime` | 创建时间 |
+| `tenantId` | `Long` | 租户 ID |
+
+### 不存在于 RespVO 的 DO 字段
+
+| DO 字段 | 说明 |
+|---------|------|
+| `templateParams` | 不在 RespVO 中（合并到 payload） |
+| `creator` | 不存在 |
+| `updater` | 不存在 |
+| `updateTime` | 不存在 |
+| `deleted` | 不存在 |
+
+### 排序规则
+
+- 按 `id` **降序**排列
+
+---
+
+## 93. Outbox 详情
+
+### 接口信息
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 查询 Outbox 事件详情 |
+| HTTP Method | `GET` |
+| 后端路径 | `/admin-api/delta/event-outbox/get` |
+| Vue 前端路径 | `/delta/event-outbox/get` |
+| 权限编码 | `delta:event-outbox:query` |
+| RespVO | `CommonResult<DeltaEventOutboxRespVO>` |
+
+### Query 参数
+
+| 字段名 | Java 类型 | 必填 | 含义 |
+|--------|-----------|------|------|
+| `id` | `Long` | 是 | 事件 ID |
+
+### 错误码
+
+| 错误码 | 含义 |
+|--------|------|
+| `1020019000` | Outbox 事件不存在 |
+
+### 响应字段
+
+同**第92节 响应字段**。
+
+---
+
+## 94. Outbox 管理操作
+
+### 94.1 人工重试
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 人工重试 Outbox 事件 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/event-outbox/retry` |
+| Vue 前端路径 | `/delta/event-outbox/retry` |
+| 权限编码 | `delta:event-outbox:retry` |
+| ReqVO | `DeltaEventOutboxRetryReqVO` |
+
+**Request Body**：
+
+| 字段名 | Java 类型 | 必填 | 校验 | 含义 |
+|--------|-----------|------|------|------|
+| `id` | `Long` | **是** | `@NotNull` | 事件 ID |
+
+**业务规则**：
+1. 事件必须存在（否则 `EVENT_OUTBOX_NOT_EXISTS`，1_020_019_000）
+2. 当前状态必须是 `3`（FAILED），否则 `EVENT_OUTBOX_STATUS_CANNOT_RETRY`（1_020_019_002）
+3. **CAS 更新**：`FAILED(3) → PENDING(0)`（`WHERE event_status = 3 AND id = ?`）
+4. CAS 失败（rows != 1）抛出 `EVENT_OUTBOX_STATUS_CHANGED`（1_020_019_011）
+5. **不会立即消费**，等待下一次 `DeltaEventOutboxConsumeJob` 扫描
+6. 不清除 `retryCount`（保留原值）
+
+**响应**：`{ "code": 0, "msg": "成功", "data": true }`
+
+### 94.2 标记死亡
+
+| 项 | 值 |
+|---|---|
+| 接口名称 | 标记 Outbox 事件为死亡 |
+| HTTP Method | `POST` |
+| 后端路径 | `/admin-api/delta/event-outbox/mark-dead` |
+| Vue 前端路径 | `/delta/event-outbox/mark-dead` |
+| 权限编码 | `delta:event-outbox:update` |
+| ReqVO | `DeltaEventOutboxMarkDeadReqVO` |
+
+**Request Body**：
+
+| 字段名 | Java 类型 | 必填 | 校验 | 含义 |
+|--------|-----------|------|------|------|
+| `id` | `Long` | **是** | `@NotNull` | 事件 ID |
+
+**业务规则**：
+1. 事件必须存在（否则 `EVENT_OUTBOX_NOT_EXISTS`，1_020_019_000）
+2. 当前状态必须是 `0`（PENDING）或 `3`（FAILED），否则 `EVENT_OUTBOX_STATUS_CANNOT_MARK_DEAD`（1_020_019_003）
+3. **CAS 更新**：
+   - 从 FAILED：`WHERE event_status = 3 AND id = ?` → DEAD(4)
+   - 从 PENDING：`WHERE event_status = 0 AND id = ?` → DEAD(4)
+4. DEAD 是**终态**，不可恢复
+
+**响应**：`{ "code": 0, "msg": "成功", "data": true }`
+
+### 不存在管理操作
+
+| 操作 | 说明 |
+|------|------|
+| `ignore`（忽略） | 不存在 |
+| `resend`（重新发送） | 不存在（人工重试后等待自动消费） |
+| `cancel`（取消） | 不存在（DEAD 就是取消效果） |
+| `batch-retry`（批量重试） | 不存在 |
+| `reset`（重置状态） | 不存在 |
+
+---
+
+## 95. Outbox 消费机制
+
+**源文件**：`DeltaEventOutboxConsumeService.java`、`DeltaEventOutboxConsumeJob.java`
+
+### 消费任务
+
+| 项 | 值 |
+|---|---|
+| 任务类 | `DeltaEventOutboxConsumeJob` |
+| 方式 | Quartz `JobHandler`（建议 cron 每1分钟） |
+| 每次处理 | 先恢复卡住事件（最多20条），再消费待处理事件（最多**50**条） |
+| 查询状态 | `PENDING(0)` 或 `FAILED(3)` 且 `nextRetryTime ≤ 当前时间` |
+| 排序 | 按 `nextRetryTime ASC`，再按 `id ASC` |
+
+### 消费流程
+
+```
+1. CAS: PENDING/FAILED → PROCESSING
+   └─ 失败 → 跳过（已被其他消费者处理）
+
+2. 如果无 templateCode（SYSTEM 事件）
+   └─ 直接 MARK SUCCESS
+
+3. 解析模板 → 校验参数 → 校验接收人
+
+4. 创建站内通知（delta_member_notification）
+
+5. CAS: PROCESSING → SUCCESS
+   （与通知创建在同一事务）
+```
+
+### 重试策略
+
+| 项 | 值 |
+|---|---|
+| 最大重试次数 | **5** 次 |
+| 退避策略（分钟） | 1, 5, 15, 60, 360（指数退避） |
+| 第5次失败后 | → DEAD（终态） |
+| 重试次数计算 | `retryCount = retryCount + 1` |
+| lastError 长度 | 最多 500 字符 |
+
+### 卡住事件恢复
+
+- `recoverStuckEvents()`：每轮消费前恢复长时间处于 PROCESSING 的事件
+- 超时阈值：**30 分钟**（`createTime ≤ 当前时间 - 30分钟`）
+- 恢复为 FAILED，`lastError = "PROCESSING超时自动恢复"`
+- 每次最多恢复 **20** 条
+
+### 人工重试 vs 自动消费
+
+| 对比项 | 人工重试 | 自动消费 |
+|--------|---------|---------|
+| 触发方式 | 管理员调用 API | Quartz 定时任务 |
+| 允许状态 | 仅 FAILED(3) | PENDING(0) 或 FAILED(3) |
+| 操作目标 | FAILED → PENDING | PENDING/FAILED → PROCESSING |
+| 是否立即处理 | **否**（等待下次扫描） | **是**（同一任务内处理） |
+| 重置 retryCount | **否**（保留） | 不涉及 |
+
+---
+
+## 96. Outbox 错误码
+
+**源文件**：`ErrorCodeConstants.java` → 段号 `1-020-019`
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020019000` | `EVENT_OUTBOX_NOT_EXISTS` | Outbox 事件不存在 |
+| `1020019001` | `EVENT_OUTBOX_ALREADY_SUCCESS` | Outbox 事件已经成功 |
+| `1020019002` | `EVENT_OUTBOX_STATUS_CANNOT_RETRY` | Outbox 状态不允许重试 |
+| `1020019003` | `EVENT_OUTBOX_STATUS_CANNOT_MARK_DEAD` | Outbox 状态不允许标记死亡 |
+| `1020019004` | `EVENT_PAYLOAD_INVALID` | 事件 Payload 不合法 |
+| `1020019005` | `EVENT_TYPE_NOT_SUPPORTED` | 事件类型不支持 |
+| `1020019006` | `EVENT_TEMPLATE_NOT_FOUND` | 通知模板不存在 |
+| `1020019007` | `EVENT_TEMPLATE_PARAMS_INCOMPLETE` | 通知模板参数不完整 |
+| `1020019008` | `EVENT_RECIPIENT_NOT_FOUND` | 通知接收人不存在 |
+| `1020019009` | `EVENT_CONSUME_STATUS_CHANGED` | 事件消费状态已变化，请刷新后重试 |
+| `1020019010` | `EVENT_EXCEED_MAX_RETRY` | 事件超过最大重试次数 |
+| `1020019011` | `EVENT_OUTBOX_STATUS_CHANGED` | 事件状态已变化（CAS 冲突） |
+
+---
+
+## 97. Outbox 并发和幂等规则
+
+### 并发控制
+
+| 场景 | 机制 |
+|------|------|
+| 自动消费并发 | CAS（`casStartProcessing`：`WHERE event_status IN (0,3) AND id = ?`） |
+| 人工重试 | CAS（`casRetry`：`WHERE event_status = 3 AND id = ?`） |
+| 标记死亡 | CAS（`casMarkDead` / `casMarkDeadFromPending`） |
+| 卡住恢复 | CAS（`casRecoverStuckToFailed`） |
+
+**不使用 Redisson 分布式锁**，完全依赖数据库 CAS。
+
+### 幂等保障
+
+| 层级 | 机制 | 说明 |
+|------|------|------|
+| 发布端 | 唯一业务键 `bizKey` | 唯一索引 `uk_tenant_biz_key(tenant_id, biz_key)` |
+| 消费端 | 通知幂等 | `createNotification` 按 `outboxEventId` 去重 |
+| 消费端 | CAS | `casStartProcessing` 防止重复消费 |
+
+### 事务边界
+
+- `processEvent()`：CAS 锁定 → 创建通知 → 标记成功，全部在同一 `@Transactional` 事务内
+- 消费失败时（标记 FAILED/DEAD）也在同一事务内
+
+### 多租户
+
+| 项 | 值 |
+|---|---|
+| DO 继承 | `TenantBaseDO` |
+| 分页隔离 | MyBatis-Plus 自动带 `tenant_id` 过滤 |
+| 唯一键 | `uk_tenant_biz_key(tenant_id, biz_key)` |
+| 消费是否切换租户 | 事件消费时使用事件记录的 `tenantId` 创建通知 |
+
+---
+
+## 98. 通知记录模块说明
+
+**源文件**：`AppDeltaNotificationController.java`、`DeltaMemberNotificationService.java`
+
+| 项 | 值 |
+|---|---|
+| 模块中文名 | 会员站内通知 |
+| 数据库表 | `delta_member_notification` |
+| DO 类 | `DeltaMemberNotificationDO`（继承 `TenantBaseDO`） |
+| Mapper | `DeltaMemberNotificationMapper` |
+| Service | `DeltaMemberNotificationService` |
+
+> **重要**：通知模块只有 **App Controller**（`/app-api/delta/notification`），**没有 Admin Controller**。Vue3 管理后台无法直接调用 App API（`/app-api`），因为 App API 依赖当前登录用户的 `userId`。
+
+### 模块说明
+
+通知记录是**会员端**功能。通知由 Outbox 消费流程自动创建，会员用户在 App 端查看通知列表、标记已读。管理后台只有 Outbox 事件管理（见第89-97节），可以查看事件的消费结果。
+
+### 是否存在 Admin Controller
+
+```text
+当前后端未提供通知记录 Admin 管理接口。
+```
+
+---
+
+## 99. 通知状态和类型枚举
+
+### 通知类型（NotificationTypeEnum）
+
+**源文件**：`NotificationTypeEnum.java`
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `SYSTEM` | `SYSTEM` | 系统通知 |
+| `ORDER` | `ORDER` | 订单通知 |
+| `SETTLEMENT` | `SETTLEMENT` | 结算通知 |
+| `REFUND` | `REFUND` | 退款通知 |
+| `REMINDER` | `REMINDER` | 提醒通知 |
+
+### 接收人类型（RecipientTypeEnum）
+
+**源文件**：`RecipientTypeEnum.java`
+
+| 值 | 枚举常量 | 中文名称 |
+|----|----------|----------|
+| `BUYER` | `BUYER` | 老板/买家 |
+| `WORKER` | `WORKER` | 打手 |
+| `ADMIN` | `ADMIN` | 管理员 |
+| `SYSTEM` | `SYSTEM` | 系统 |
+
+### 阅读状态
+
+| 数据库值 | 含义 |
+|----------|------|
+| `0` / `false` | 未读 |
+| `1` / `true` | 已读 |
+
+**没有独立的 `ReadStatusEnum`**，直接使用 `Boolean` 类型。
+
+---
+
+## 100. App 通知接口
+
+> **以下接口全部是 App API**（`/app-api`），仅供会员用户端调用，**不是 Admin 管理接口**。
+
+### 100.1 App 通知分页
+
+| 项 | 值 |
+|---|---|
+| Controller | `AppDeltaNotificationController` |
+| HTTP Method | `GET` |
+| 完整路径 | `/app-api/delta/notification/page` |
+| 权限 | 无（登录用户只能查自己的通知） |
+| ReqVO | `AppDeltaNotificationPageReqVO` |
+| RespVO | `CommonResult<PageResult<AppDeltaNotificationRespVO>>` |
+
+**Query 参数**：
+
+| 字段名 | 类型 | 含义 |
+|--------|------|------|
+| `pageNo` | `Long` | 页码 |
+| `pageSize` | `Long` | 每页条数 |
+| `readStatus` | `Boolean` | 已读状态过滤 |
+| `notificationType` | `String` | 通知类型过滤 |
+| `createTimeStart` | `LocalDateTime` | 创建时间开始 |
+| `createTimeEnd` | `LocalDateTime` | 创建时间结束 |
+
+**响应字段（AppDeltaNotificationRespVO）**：
+
+| 字段名 | 类型 | 含义 |
+|--------|------|------|
+| `id` | `Long` | 通知 ID |
+| `notificationType` | `String` | 通知类型 |
+| `title` | `String` | 通知标题 |
+| `content` | `String` | 通知内容 |
+| `bizType` | `String` | 业务类型 |
+| `bizId` | `Long` | 业务 ID |
+| `readStatus` | `Boolean` | 是否已读 |
+| `readTime` | `LocalDateTime` | 已读时间 |
+| `createTime` | `LocalDateTime` | 创建时间 |
+
+### 100.2 App 通知详情
+
+| 项 | 值 |
+|---|---|
+| HTTP Method | `GET` |
+| 完整路径 | `/app-api/delta/notification/get` |
+| 参数 | `id`（Long，必填） |
+
+**安全校验**：验证通知属于当前登录用户和当前租户，否则分别抛出 `NOTIFICATION_NOT_BELONG_TO_USER` 或 `CROSS_TENANT_ACCESS_DENIED`。
+
+### 100.3 未读数量
+
+| 项 | 值 |
+|---|---|
+| HTTP Method | `GET` |
+| 完整路径 | `/app-api/delta/notification/unread-count` |
+| 响应 | `CommonResult<Long>` |
+
+### 100.4 标记已读
+
+| 项 | 值 |
+|---|---|
+| HTTP Method | `PUT` |
+| 完整路径 | `/app-api/delta/notification/read` |
+| ReqVO | `AppDeltaNotificationReadReqVO` |
+
+**Request Body**：
+
+| 字段名 | 类型 | 必填 | 含义 |
+|--------|------|------|------|
+| `id` | `Long` | **是** | 通知 ID |
+
+**规则**：已读后不可重复标记，抛 `NOTIFICATION_ALREADY_READ`。
+
+### 100.5 全部标记已读
+
+| 项 | 值 |
+|---|---|
+| HTTP Method | `PUT` |
+| 完整路径 | `/app-api/delta/notification/read-all` |
+| 响应 | `CommonResult<Boolean>` |
+
+一次性将该用户当前租户下所有未读通知标记已读。
+
+---
+
+## 101. 通知错误码
+
+**源文件**：`ErrorCodeConstants.java` → 段号 `1-020-020`
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020020000` | `NOTIFICATION_NOT_EXISTS` | 站内消息不存在 |
+| `1020020001` | `NOTIFICATION_NOT_BELONG_TO_USER` | 无权查看该消息 |
+| `1020020002` | `NOTIFICATION_ALREADY_READ` | 消息已经已读 |
+
+### 关联错误码
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020011010` | `CROSS_TENANT_ACCESS_DENIED` | 跨租户访问被拒绝 |
+
+---
+
+## 102. 通知并发和幂等规则
+
+### 幂等
+
+| 场景 | 机制 |
+|------|------|
+| 创建通知 | 按 `outboxEventId` 去重（`selectByOutboxEventId`），同一 Outbox 事件不会创建两条通知 |
+| 标记已读 | CAS：`update read_status where id=? and user_id=? and tenant_id=? and read_status=0`，重复标记已读抛 `NOTIFICATION_ALREADY_READ` |
+
+### 多租户
+
+| 项 | 值 |
+|---|---|
+| DO 继承 | `TenantBaseDO` |
+| 分页隔离 | `selectPageByUserId` 同时按 `userId` 和 `tenantId` 过滤 |
+
+---
+
+## 103. 提醒记录模块说明
+
+**源文件**：`DeltaReminderService.java`、`DeltaReminderScanJob.java`
+
+| 项 | 值 |
+|---|---|
+| 模块中文名 | 超时提醒记录 |
+| 数据库表 | `delta_reminder_record` |
+| DO 类 | `DeltaReminderRecordDO`（继承 `TenantBaseDO`） |
+| Mapper | `DeltaReminderRecordMapper` |
+| Service | `DeltaReminderService` |
+
+> **重要**：提醒记录是纯后端机制，**没有任何 Controller**（Admin 或 App）。Vue3 管理后台无法直接操作或查询提醒记录。
+
+### 模块说明
+
+提醒记录用于**冷却控制**：同一业务对象在同一提醒类型下，对同一接收人在冷却时间（默认6小时）内只发送一次提醒。提醒发送后写记录，下次扫描时检查冷却。
+
+### 是否存在 Admin Controller
+
+```text
+当前后端未提供提醒记录 Admin 管理接口。
+
+提醒记录由 DeltaReminderService 内部使用，不做为业务记录对外暴露。
+```
+
+---
+
+## 104. 提醒类型和状态
+
+### 提醒类型（ReminderTypeEnum）
+
+**源文件**：`ReminderTypeEnum.java`
+
+| 值 | 枚举常量 | 中文名称 | 超时配置 | 默认阈值 | 通知对象 |
+|----|----------|----------|----------|----------|----------|
+| `DISPATCH_PENDING` | `DISPATCH_PENDING` | 待派单超时 | `dispatchPendingMinutes` | 30 分钟 | 管理员 |
+| `WORKER_START_PENDING` | `WORKER_START_PENDING` | 打手待开始超时 | `workerStartMinutes` | 30 分钟 | 打手 + 管理员 |
+| `PROGRESS_SILENT` | `PROGRESS_SILENT` | 服务无进度超时 | `progressSilentHours` | 6 小时 | 打手 |
+| `ACCEPTANCE_PENDING` | `ACCEPTANCE_PENDING` | 待验收超时 | `acceptancePendingHours` | 12 小时 | 老板/买家 |
+| `REFUND_PENDING` | `REFUND_PENDING` | 退款待处理超时 | `refundPendingHours` | 24 小时 | 管理员 |
+| `RECOVERY_PENDING` | `RECOVERY_PENDING` | 追回待处理超时 | `recoveryPendingHours` | 48 小时 | 管理员 |
+
+### 提醒记录字段（DeltaReminderRecordDO）
+
+**源文件**：`DeltaReminderRecordDO.java`
+
+| 字段名 | Java 类型 | 含义 |
+|--------|-----------|------|
+| `id` | `Long` | 记录 ID |
+| `reminderType` | `String` | 提醒类型 |
+| `bizType` | `String` | 业务类型 |
+| `bizId` | `Long` | 业务 ID |
+| `recipientId` | `Long` | 接收人用户 ID |
+| `recipientType` | `String` | 接收人类型 |
+| `lastRemindTime` | `LocalDateTime` | 最后提醒时间 |
+| `remindCount` | `Integer` | 提醒次数 |
+| `tenantId` | `Long` | 租户 ID |
+
+> 提醒记录**没有状态字段**（无 status、无终态概念）。记录仅用于冷却判断，不计状态。
+
+### 冷却机制
+
+| 项 | 值 |
+|---|---|
+| 配置项 | `cooldownHours`，默认 **6 小时** |
+| 唯一约束 | `uk_tenant_reminder(tenant_id, reminder_type, biz_type, biz_id, recipient_id)` |
+| 冷却逻辑 | `lastRemindTime + cooldownHours > now` → 跳过 |
+
+---
+
+## 105. 提醒记录查询接口
+
+```text
+当前后端未提供提醒记录的 Admin 或 App 查询接口。
+
+提醒记录仅由 DeltaReminderService 内部用于冷却控制，不作为独立业务数据对外暴露。
+```
+
+---
+
+## 106. 提醒错误码
+
+**源文件**：`ErrorCodeConstants.java` → 段号 `1-020-021`
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020021000` | `REMINDER_RECORD_EXISTS` | 提醒记录已经存在 |
+
+> 注意：`REMINDER_RECORD_EXISTS` 在 ErrorCodeConstants 中定义但**当前代码中未使用**。唯一约束 `uk_tenant_reminder` 已保护不重复插入。
+
+---
+
+## 107. 超时和定时任务说明
+
+Delta 模块使用 **Quartz JobHandler** 模式（非 Spring `@Scheduled`）。定时任务通过数据库轮询方式扫描业务表执行。
+
+| 任务 | 类 | 类型 | 说明 |
+|------|-----|------|------|
+| Outbox 事件消费 | `DeltaEventOutboxConsumeJob` | Quartz JobHandler | 每分钟扫描并消费 Outbox 事件 |
+| 超时提醒扫描 | `DeltaReminderScanJob` | Quartz JobHandler | 扫描超时业务并发送提醒 |
+
+> **重要**：两个 Quartz 任务**都没有对应的 Admin 管理接口**。后台无法手动触发、暂停、查询任务执行状态。任务的管理依赖 Quartz 框架自身的调度管理。
+
+---
+
+## 108. Outbox 消费定时任务
+
+| 项 | 值 |
+|---|---|
+| 任务类 | `DeltaEventOutboxConsumeJob` |
+| 执行方式 | Quartz `JobHandler`（建议 cron：每 1 分钟） |
+| 每次处理条数 | 先恢复 20 条卡住事件 + 最多 50 条待消费事件 |
+| 查询条件 | `event_status = 0 (PENDING)` 或 `(event_status = 3 (FAILED) AND next_retry_time ≤ NOW)` |
+| 排序 | `nextRetryTime ASC, id ASC` |
+| 异常处理 | 单条失败不影响其他事件（在 `processEvent` 内部 try-catch） |
+| 分布式锁 | **无**（依赖 CAS 防止重复消费） |
+| 返回值 | 字符串 `"Outbox消费完成: 处理X 成功Y"` |
+
+### 执行顺序
+
+1. `recoverStuckEvents(20)` — 恢复超时 PROCESSING 事件为 FAILED
+2. `selectPendingEvents(50)` — 查询待消费事件
+3. 逐条 `processEvent()` — CAS 锁定 → 消费 → 完成或重试
+
+---
+
+## 109. 超时提醒定时任务
+
+| 项 | 值 |
+|---|---|
+| 任务类 | `DeltaReminderScanJob` |
+| 执行方式 | Quartz `JobHandler`（建议 cron：每 5-10 分钟） |
+| 扫描内容 | 6 种超时类型，每种单独查询 |
+| 每类型限制 | 每次最多 50 条（`LIMIT 50`） |
+| 提醒创建 | 通过 `DeltaMemberNotificationService` 写入站内通知 |
+| 分布式锁 | **无**（依赖唯一约束 `uk_tenant_reminder` 防止重复） |
+| 异常处理 | 单条失败不影响其他提醒 |
+
+### 6 种扫描详情
+
+| 扫描方法 | 业务表 | 查询状态 | 超时字段 | 模板 |
+|----------|--------|----------|----------|------|
+| `scanDispatchPending` | `delta_service_order` | POOL_PENDING | `createTime` | REMINDER_DISPATCH_PENDING |
+| `scanWorkerStartPending` | `delta_service_order` | ACCEPTED_PENDING_START | `acceptedAt` | REMINDER_WORKER_START + REMINDER_WORKER_START_ADMIN |
+| `scanProgressSilent` | `delta_service_order` | IN_PROGRESS | `updateTime` | REMINDER_PROGRESS_SILENT |
+| `scanAcceptancePending` | `delta_service_order` | WORKER_SUBMITTED | `submittedAt` | REMINDER_ACCEPTANCE_PENDING |
+| `scanRefundPending` | `delta_refund_record` | PENDING_MANUAL | `createTime` | REMINDER_REFUND_PENDING |
+| `scanRecoveryPending` | `delta_fund_recovery` | PENDING / PROCESSING | `createTime` | REMINDER_RECOVERY_PENDING |
+
+### 超时配置（DeltaReminderProperties）
+
+| 配置项 | 默认值 | 单位 |
+|--------|--------|------|
+| `yudao.delta.reminder.dispatch-pending-minutes` | 30 | 分钟 |
+| `yudao.delta.reminder.worker-start-minutes` | 30 | 分钟 |
+| `yudao.delta.reminder.progress-silent-hours` | 6 | 小时 |
+| `yudao.delta.reminder.acceptance-pending-hours` | 12 | 小时 |
+| `yudao.delta.reminder.refund-pending-hours` | 24 | 小时 |
+| `yudao.delta.reminder.recovery-pending-hours` | 48 | 小时 |
+| `yudao.delta.reminder.cooldown-hours` | 6 | 小时 |
+
+---
+
+## 110. 定时任务并发和锁规则
+
+| 任务 | 并发控制 | 说明 |
+|------|---------|------|
+| `DeltaEventOutboxConsumeJob` | 无分布式锁 | CAS 乐观锁防止重复消费；若多节点同时运行，同一事件只有一个节点 CAS 成功 |
+| `DeltaReminderScanJob` | 无分布式锁 | 唯一约束 `uk_tenant_reminder` 防止重复提醒；多节点可能产生少量重复扫描开销但不会重复提醒 |
+
+> **两个任务都没有使用 Redisson 分布式锁**。并发安全依赖 CAS 和数据库唯一约束。
+
+---
+
+## 111. 事件类型枚举
+
+**源文件**：`DeltaEventTypeEnum.java`
+
+### 打手与申请（5种）
+
+| 枚举常量 | 中文名称 |
+|----------|----------|
+| `WORKER_APPLICATION_SUBMITTED` | 打手申请已提交 |
+| `WORKER_APPLICATION_APPROVED` | 打手申请已通过 |
+| `WORKER_APPLICATION_REJECTED` | 打手申请已驳回 |
+| `WORKER_ENABLED` | 打手已启用 |
+| `WORKER_DISABLED` | 打手已禁用 |
+
+### 服务单和派单（7种）
+
+| 枚举常量 | 中文名称 |
+|----------|----------|
+| `SERVICE_ORDER_CREATED` | 服务订单已创建 |
+| `SERVICE_ORDER_CONFIRMED` | 服务订单已确认 |
+| `SERVICE_ORDER_ENTERED_POOL` | 服务订单已进入订单池 |
+| `SERVICE_ORDER_DISPATCHED` | 服务订单已派单 |
+| `SERVICE_ORDER_REASSIGNED` | 服务订单已改派 |
+| `SERVICE_ORDER_CLAIMED` | 打手已接单 |
+| `SERVICE_ORDER_RETURNED_POOL` | 服务订单已退回订单池 |
+
+### 履约（6种）
+
+| 枚举常量 | 中文名称 |
+|----------|----------|
+| `SERVICE_STARTED` | 打手已开始服务 |
+| `SERVICE_PROGRESS_UPDATED` | 服务进度已更新 |
+| `SERVICE_EVIDENCE_ADDED` | 服务凭证已添加 |
+| `SERVICE_COMPLETION_SUBMITTED` | 打手已提交完成 |
+| `SERVICE_REWORK_REQUESTED` | 老板要求返工 |
+| `SERVICE_ACCEPTED` | 服务已验收完成 |
+
+### 结算（4种）
+
+| 枚举常量 | 中文名称 |
+|----------|----------|
+| `SETTLEMENT_CREATED` | 结算单已生成 |
+| `SETTLEMENT_APPROVED` | 结算审核已通过 |
+| `SETTLEMENT_REJECTED` | 结算审核已驳回 |
+| `SETTLEMENT_PAID` | 结算已打款 |
+
+### 取消和售后（7种）
+
+| 枚举常量 | 中文名称 |
+|----------|----------|
+| `CANCEL_APPLIED` | 取消申请已提交 |
+| `CANCEL_APPROVED` | 取消申请已通过 |
+| `CANCEL_REJECTED` | 取消申请已驳回 |
+| `AFTER_SALE_APPLIED` | 售后案件已提交 |
+| `AFTER_SALE_ACCEPTED` | 售后案件已受理 |
+| `AFTER_SALE_REJECTED` | 售后案件已驳回 |
+| `AFTER_SALE_ARBITRATED` | 售后仲裁已完成 |
+
+### 退款和追回（8种）
+
+| 枚举常量 | 中文名称 |
+|----------|----------|
+| `REFUND_CREATED` | 退款记录已创建 |
+| `REFUND_PROCESSING` | 退款处理中 |
+| `REFUND_COMPLETED` | 退款已完成 |
+| `REFUND_FAILED` | 退款处理失败 |
+| `RECOVERY_CREATED` | 追回任务已生成 |
+| `RECOVERY_PARTIAL` | 追回部分完成 |
+| `RECOVERY_COMPLETED` | 追回任务已完成 |
+| `RECOVERY_FAILED` | 追回任务失败 |
+
+### 超时提醒（6种）
+
+| 枚举常量 | 中文名称 |
+|----------|----------|
+| `DISPATCH_PENDING_TIMEOUT` | 待派单超时提醒 |
+| `WORKER_START_TIMEOUT` | 打手待开始超时提醒 |
+| `PROGRESS_SILENT_TIMEOUT` | 服务无进度超时提醒 |
+| `ACCEPTANCE_PENDING_TIMEOUT` | 待验收超时提醒 |
+| `REFUND_PENDING_TIMEOUT` | 退款待处理超时提醒 |
+| `RECOVERY_PENDING_TIMEOUT` | 追回待处理超时提醒 |
+
+> 共计 **43** 种事件类型。
+
+---
+
+## 112. 通知模板枚举
+
+**源文件**：`DeltaNotificationTemplateEnum.java`
+
+通知由 Outbox 消费时通过模板渲染生成。共 **26** 种模板，模板参数用 `{paramName}` 占位符，渲染后内容最长 **500** 字符。
+
+### 派单与接单（4种）
+
+| 模板编码 | 标题 | 接收人 |
+|----------|------|--------|
+| `ORDER_DISPATCHED` | 订单已派给你 | 打手 |
+| `ORDER_CLAIMED` | 你已成功接单 | 打手 |
+| `ORDER_REASSIGNED` | 订单已改派 | 打手 |
+| `ORDER_ENTERED_POOL` | 新订单已进入订单池 | 打手 |
+
+### 履约（4种）
+
+| 模板编码 | 标题 | 接收人 |
+|----------|------|--------|
+| `SERVICE_STARTED` | 打手已开始服务 | 老板/买家 |
+| `SERVICE_SUBMITTED` | 打手已提交完成 | 老板/买家 |
+| `SERVICE_REWORK_REQUESTED` | 老板要求返工 | 打手 |
+| `SERVICE_ACCEPTED` | 服务已验收完成 | 打手 |
+
+### 结算（3种）
+
+| 模板编码 | 标题 | 接收人 |
+|----------|------|--------|
+| `SETTLEMENT_APPROVED` | 结算审核通过 | 打手 |
+| `SETTLEMENT_REJECTED` | 结算审核驳回 | 打手 |
+| `SETTLEMENT_PAID` | 结算已打款 | 打手 |
+
+### 取消与售后（3种）
+
+| 模板编码 | 标题 | 接收人 |
+|----------|------|--------|
+| `CANCEL_APPROVED` | 取消申请已通过 | 老板/买家 |
+| `CANCEL_REJECTED` | 取消申请已驳回 | 老板/买家 |
+| `AFTER_SALE_ARBITRATED` | 售后仲裁已完成 | 老板/买家 |
+
+### 退款（2种）
+
+| 模板编码 | 标题 | 接收人 |
+|----------|------|--------|
+| `REFUND_COMPLETED` | 退款已人工完成 | 老板/买家 |
+| `REFUND_FAILED` | 退款处理失败 | 老板/买家 |
+
+### 追回（1种）
+
+| 模板编码 | 标题 | 接收人 |
+|----------|------|--------|
+| `RECOVERY_NEEDED` | 追回任务需要处理 | 管理员 |
+
+### 超时提醒（7种）
+
+| 模板编码 | 标题 | 接收人 |
+|----------|------|--------|
+| `REMINDER_DISPATCH_PENDING` | 待派单超时提醒 | 管理员 |
+| `REMINDER_WORKER_START` | 打手待开始提醒 | 打手 |
+| `REMINDER_WORKER_START_ADMIN` | 打手待开始提醒 | 管理员 |
+| `REMINDER_PROGRESS_SILENT` | 服务无进度提醒 | 打手 |
+| `REMINDER_ACCEPTANCE_PENDING` | 待验收提醒 | 老板/买家 |
+| `REMINDER_REFUND_PENDING` | 退款待处理提醒 | 管理员 |
+| `REMINDER_RECOVERY_PENDING` | 追回待处理提醒 | 管理员 |
+
+---
+
+## 113. 第七阶段 Vue3 对接注意事项
+
+### 能对接的 Admin 模块
+
+**仅有 Outbox 事件管理**（`/delta/event-outbox`）：
+
+| 页面 | URL | 权限 |
+|------|-----|------|
+| Outbox 事件列表 | `/delta/event-outbox/page` | `delta:event-outbox:query` |
+| Outbox 事件详情 | `/delta/event-outbox/get` | `delta:event-outbox:query` |
+| 人工重试 | `/delta/event-outbox/retry` | `delta:event-outbox:retry` |
+| 标记死亡 | `/delta/event-outbox/mark-dead` | `delta:event-outbox:update` |
+
+### 不能对接的模块
+
+| 模块 | 说明 |
+|------|------|
+| 通知记录管理 | 只有 App API（`/app-api`），Vue3 管理后台不应直接调用 |
+| 提醒记录管理 | 无任何对外 API |
+| 超时任务管理 | Quartz 自动执行，无 Admin API |
+| 通知模板管理 | 通知模板是 Java 枚举，不可运行时修改 |
+
+### 数据类型注意事项
+
+| 项 | 类型/注意 |
+|----|-----------|
+| ID 字段 | `number`（后端 `Long`） |
+| eventStatus | `number`（0-PENDING, 1-PROCESSING, 2-SUCCESS, 3-FAILED, 4-DEAD） |
+| eventType | 字符串（见第111节） |
+| payload | JSON 字符串，前端显示需 `JSON.parse` 并注意脱敏（前300字符） |
+| lastError | 字符串，前200字符截断 |
+| 时间字段 | `LocalDateTime` 序列化为字符串 |
+| 状态颜色建议 | PENDING: 橙色, PROCESSING: 蓝色, SUCCESS: 绿色, FAILED: 红色, DEAD: 灰色 |
+
+### 菜单结构（Phase 10 SQL 已定义）
+
+```
+事件管理 (parent_id: 2096, path: event-outbox)
+├── Outbox事件查询 (delta:event-outbox:query, component: delta/eventOutbox/index)
+├── 事件重试 (delta:event-outbox:retry, 按钮)
+└── 事件标记死亡 (delta:event-outbox:update, 按钮)
+```
+
+### 特别注意事项
+
+1. **Outbox 分页/详情返回的是 RespVO**（经过 `DeltaEventOutboxRespVO.from()` 转换），与 Phase 6 追回模块不同（追回返回 DO）。
+
+2. **payload 和 lastError 已脱敏**：payload 截断为 300 字符，lastError 截断为 200 字符。
+
+3. **重试不立即消费**：人工重试只是把 FAILED 改回 PENDING，等待下一次定时任务（1分钟内）消费。
+
+4. **标记死亡只允许 PENDING 和 FAILED**：已成功或已死亡的不可标记。
+
+5. **通知在 App 端**：管理后台如需查看"某事件是否消费成功并创建了通知"，应通过事件状态（SUCCESS）判断，而非查通知表。
+
+6. **Admin 权限编码**：
+
+   | 编码 | 覆盖 |
+   |------|------|
+   | `delta:event-outbox:query` | page, get |
+   | `delta:event-outbox:retry` | retry |
+   | `delta:event-outbox:update` | mark-dead |
+
+---
+
+## 114. 第七阶段后端尚未提供的内容
+
+| 内容 | 说明 |
+|------|------|
+| 通知记录 Admin 管理接口 | 不存在。通知仅 App API，Admin 无法查看通知列表 |
+| 提醒记录 Admin 管理接口 | 不存在。提醒记录是纯后端冷却机制 |
+| 超时任务 Admin 管理接口 | 不存在。任务由 Quartz 自动执行 |
+| 通知模板 Admin 管理 | 不存在。模板是 Java 枚举，运行时不可修改 |
+| Outbox 批量操作 | 不存在。重试和标记死亡都是单条操作 |
+| Outbox 忽略操作 | 不存在。只能标记死亡 |
+| Outbox 重新发送操作 | 不存在。重试后等待自动消费 |
+| Outbox 统计/汇总 | 不存在 |
+| 事件发布测试接口 | 不存在 |
+| 通知删除接口 | 不存在（App 端也没有删除功能） |
+| 通知推送渠道管理 | SMS/WebSocket/Wechat 渠道已预留接口但**均为空实现** |
+| 定时任务手动触发 | 不存在（Quartz JobHandler 不提供 Admin 手动执行入口） |\n\n---\n\n## 115. 第八阶段模块总览（已实现）
+
+**Phase 8** 正式实现三个模块：
+
+| 子模块 | 数据库表 | Admin Controller | 权限前缀 | 说明 |
+|--------|----------|-----------------|----------|------|
+| Delta 运营统计 | 无独立表（聚合现有表） | `DeltaStatisticsController` | `delta:statistics:query` | 5 个接口：总览/趋势/状态分布/售后资金/打手排行 |
+| Delta 财务汇总 | 无独立表（聚合现有表） | `DeltaFinanceController` | `delta:finance:query` | 5 个接口：总览/趋势/结算汇总/退款汇总/追回汇总 |
+| Delta 财务对账 | `delta_finance_reconciliation` | `DeltaFinanceReconciliationController` | `delta:finance-reconciliation:*` | 7 个接口：分页/详情/生成/确认/重试/取消/导出Excel |
+| 商品服务配置 | `delta_product_service_config` | `DeltaProductServiceConfigController` | `delta:product-service-config:*` | 管理 SPU/SKU 的服务规则（Phase 7 已完成） |
+
+### 核心数据流
+
+```
+运营统计 → 聚合查询 delta_service_order + delta_after_sale + delta_refund_record
+         + delta_fund_recovery + delta_worker_settlement
+
+财务汇总 → 同上聚合查询，按多维度计算
+
+财务对账 → 按天生成快照，包含订单/结算/退款/追回汇总
+         + expectedPlatformAmount vs actualPlatformAmount 差异
+```
+
+---
+
+## 116. 运营统计模块
+
+**Controller**：`DeltaStatisticsController`  
+**RequestMapping**：`/delta/statistics`  
+**权限**：`delta:statistics:query`（所有接口共用）  
+**Service**：`DeltaStatisticsService` / `DeltaStatisticsServiceImpl`  
+**Mapper**：`DeltaStatisticsQueryMapper`（`@Select` 聚合 SQL）
+
+### 116.1 运营总览 GET /delta/statistics/overview
+
+| 项 | 值 |
+|---|---|
+| ReqVO | `DeltaStatisticsDateReqVO`：startTime + endTime（`LocalDateTime`） |
+| RespVO | `DeltaStatisticsOverviewRespVO` |
+
+**返回字段**（金额单位：**分**）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `totalOrderCount` | Long | 订单总量 |
+| `pendingClaimCount` | Long | 待派单（状态10+30） |
+| `processingOrderCount` | Long | 履约中（状态40+50+60+70） |
+| `pendingAcceptanceCount` | Long | 待验收（状态60+70） |
+| `completedOrderCount` | Long | 已完成（状态80） |
+| `canceledOrderCount` | Long | 已取消（状态110） |
+| `afterSaleOrderCount` | Long | 售后/纠纷中（状态90+100） |
+| `totalServiceAmount` | Long | 服务订单总金额 |
+| `completedServiceAmount` | Long | 已完成金额 |
+| `afterSaleCount` | Long | 售后案件数 |
+| `refundCount` | Long | 退款笔数 |
+| `refundAmount` | Long | 退款总金额 |
+| `recoveryTaskCount` | Long | 追回任务数 |
+| `recoveredAmount` | Long | 已追回金额 |
+| `workerSettlementCount` | Long | 结算笔数 |
+| `settlementAmount` | Long | 结算总金额 |
+| `paidSettlementAmount` | Long | 已打款金额 |
+
+### 116.2 订单趋势 GET /delta/statistics/order-trend
+
+| 项 | 值 |
+|---|---|
+| ReqVO | `DeltaStatisticsTrendReqVO`：startDate + endDate（`LocalDate`）+ granularity（DAY/WEEK/MONTH） |
+| RespVO | `List<DeltaStatisticsTrendItemRespVO>` |
+
+**每项字段**：date / orderCount / completedOrderCount / serviceAmount / completedServiceAmount / afterSaleCount / refundAmount / recoveredAmount
+
+### 116.3 订单状态分布 GET /delta/statistics/order-status-distribution
+
+| 项 | 值 |
+|---|---|
+| ReqVO | `DeltaStatisticsDateReqVO` |
+| RespVO | `List<DeltaStatisticsOrderStatusDistributionRespVO>` |
+
+**每项字段**：status / statusName / count / amount
+
+### 116.4 售后与资金统计 GET /delta/statistics/after-sale-summary
+
+| 项 | 值 |
+|---|---|
+| ReqVO | `DeltaStatisticsDateReqVO` |
+| RespVO | `DeltaStatisticsAfterSaleSummaryRespVO` |
+
+返回售后/退款/追回的计数和金额汇总。
+
+### 116.5 打手排行 GET /delta/statistics/worker-ranking
+
+| 项 | 值 |
+|---|---|
+| ReqVO | `DeltaStatisticsWorkerRankingReqVO`：startTime/endTime + rankingType + limit(1-100, 默认10) |
+| RespVO | `List<DeltaStatisticsWorkerRankingItemRespVO>` |
+
+**rankingType**：ORDER_COUNT / COMPLETED_COUNT / SERVICE_AMOUNT / SETTLEMENT_AMOUNT
+
+**每项字段**：workerId / workerName / orderCount / completedCount / serviceAmount / settlementAmount / rank
+
+### 统计口径
+
+| 指标 | 数据源 | 过滤条件 |
+|------|--------|----------|
+| 订单计数 | `delta_service_order` | 按 `create_time` 时间范围过滤 |
+| 状态过滤 | 同上 | 使用 `ServiceOrderStatusEnum` 枚举值 |
+| 金额 | 同上 | `service_amount` 字段（分） |
+| 售后 | `delta_after_sale` | 按 `create_time` |
+| 退款 | `delta_refund_record` | 按 `create_time`，`refund_amount`（分） |
+| 追回 | `delta_fund_recovery` | 按 `create_time` |
+| 结算 | `delta_worker_settlement` | 按 `create_time`，`worker_amount`（分） |
+| 趋势聚合 | `@Select` SQL GROUP BY | `DATE_FORMAT(create_time, '%Y-%m-%d')` |
+| 租户隔离 | MyBatis-Plus Tenant 插件 | 自动注入 `tenant_id` 条件 |
+
+### 校验规则
+
+- 时间范围不能超过 **366 天** → `STATISTICS_RANGE_TOO_LARGE`
+- 开始时间必须早于结束时间 → `STATISTICS_DATE_RANGE_INVALID`
+- granularity 仅支持 DAY/WEEK/MONTH → `STATISTICS_GRANULARITY_INVALID`
+
+---
+
+## 117. 财务汇总模块
+
+**Controller**：`DeltaFinanceController`  
+**RequestMapping**：`/delta/finance`  
+**权限**：`delta:finance:query`  
+**Service**：`DeltaFinanceService` / `DeltaFinanceServiceImpl`
+
+### 117.1 财务总览 GET /delta/finance/summary
+
+| 项 | 值 |
+|---|---|
+| ReqVO | `DeltaFinanceSummaryReqVO`：startTime + endTime |
+| RespVO | `DeltaFinanceSummaryRespVO` |
+
+返回字段（全部金额单位**分**）：serviceOrderAmount / platformFeeAmount / workerIncomeAmount / settlementAmount / approvedSettlementAmount / paidSettlementAmount / pendingSettlementAmount / refundAmount / completedRefundAmount / pendingRefundAmount / shouldRecoverAmount / recoveredAmount / remainingRecoveryAmount / platformBearAmount / workerDeductionAmount
+
+### 117.2 财务趋势 GET /delta/finance/trend
+
+| 项 | 值 |
+|---|---|
+| ReqVO | `DeltaFinanceTrendReqVO`：startDate + endDate + granularity |
+| RespVO | `List<DeltaFinanceTrendItemRespVO>` |
+
+每项：date / serviceAmount / platformFeeAmount / workerIncomeAmount / settlementAmount / paidSettlementAmount / refundAmount / recoveredAmount
+
+### 117.3 结算汇总 GET /delta/finance/settlement-summary
+
+按结算状态（0-待审核/1-已通过/2-已驳回/3-已打款/4-已取消）返回计数和金额。金额单位**分**。
+
+### 117.4 退款汇总 GET /delta/finance/refund-summary
+
+按退款状态（0-待人工退款/1-处理中/2-已完成/3-已取消/4-失败）返回计数和金额。
+
+### 117.5 追回汇总 GET /delta/finance/recovery-summary
+
+按追回状态（0-待处理/1-处理中/2-部分追回/3-已全部追回/4-失败/5-已取消）返回计数和金额。
+
+---
+
+## 118. 财务对账模块
+
+**Controller**：`DeltaFinanceReconciliationController`  
+**RequestMapping**：`/delta/finance-reconciliation`  
+**数据库表**：`delta_finance_reconciliation`  
+**DO**：`DeltaFinanceReconciliationDO`（继承 `TenantBaseDO`）  
+**Mapper**：`DeltaFinanceReconciliationMapper`
+
+### 118.1 对账状态枚举
+
+| 值 | 枚举 | 含义 | 是否终态 |
+|----|------|------|----------|
+| 0 | PENDING | 待计算 | 否 |
+| 1 | MATCHED | 对账一致 | 否 |
+| 2 | DIFFERENCE | 存在差异 | 否 |
+| 3 | CONFIRMED | 已确认 | **是** |
+| 4 | FAILED | 计算失败 | 否 |
+| 5 | CANCELED | 已取消 | **是** |
+
+### 118.2 状态矩阵
+
+```
+生成：不存在 → PENDING → 计算后 MATCHED 或 DIFFERENCE（异常 → FAILED）
+确认：MATCHED → CONFIRMED ； DIFFERENCE → CONFIRMED
+重试：FAILED → PENDING → MATCHED / DIFFERENCE / FAILED
+取消：PENDING/MATCHED/DIFFERENCE → CANCELED
+```
+
+### 118.3 对账分页 GET /delta/finance-reconciliation/page
+
+权限：`delta:finance-reconciliation:query`  
+ReqVO：`DeltaFinanceReconciliationPageReqVO`（reconciliationNo / reconciliationDate / status / createTime[]）
+
+### 118.4 对账详情 GET /delta/finance-reconciliation/get
+
+权限：`delta:finance-reconciliation:query`  
+参数：id（Long）
+
+### 118.5 生成对账 POST /delta/finance-reconciliation/generate
+
+权限：`delta:finance-reconciliation:generate`  
+ReqVO：`DeltaFinanceReconciliationGenerateReqVO`（reconciliationDate `LocalDate`）  
+返回：Long（对账记录ID）
+
+**业务规则**：
+- 对账周期 = reconciliationDate 00:00:00 到次日 00:00:00
+- 同一租户同一天不可重复生成（uk_tenant_reconciliation_date 唯一约束）
+- 事务中完成计算
+- 对账一致 → MATCHED，有差异 → DIFFERENCE
+- 对账单号格式：`REC` + yyyyMMdd + 流水号
+
+### 118.6 确认对账 POST /delta/finance-reconciliation/confirm
+
+权限：`delta:finance-reconciliation:confirm`  
+ReqVO：`DeltaFinanceReconciliationConfirmReqVO`（id + remark，remark 最长500字）
+
+**仅 MATCHED 和 DIFFERENCE 可确认**。使用 CAS + 版本号乐观锁防并发。
+
+### 118.7 重试 POST /delta/finance-reconciliation/retry
+
+权限：`delta:finance-reconciliation:retry`  
+参数：id
+
+**仅 FAILED 可重试**。重新计算所有指标。
+
+### 118.8 取消 POST /delta/finance-reconciliation/cancel
+
+权限：`delta:finance-reconciliation:cancel`  
+ReqVO：`DeltaFinanceReconciliationCancelReqVO`（id + reason，必填最长500字）
+
+**仅 PENDING/MATCHED/DIFFERENCE 可取消**。
+
+### 118.9 导出 Excel GET /delta/finance-reconciliation/export-excel
+
+权限：`delta:finance-reconciliation:export`  
+ReqVO：`DeltaFinanceReconciliationExportReqVO`（复用分页查询字段，不分页）  
+Excel VO：`DeltaFinanceReconciliationExcelVO`  
+返回类型：`void`（直接写入 HttpServletResponse，Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet）  
+文件名格式：`Delta财务对账_yyyyMMdd.xlsx`  
+最大导出数量：10,000 条  
+金额单位：分  
+多租户规则：自动按当前租户 `tenantId` 隔离（从 TenantContext 获取），不导出全部租户数据  
+不导出字段：tenantId、deleted 等内部字段  
+超过限制错误码：`1_020_023_010`（导出数据超过最大限制）
+
+### 118.9 对账计算公式
+
+| 指标 | 公式 |
+|------|------|
+| `serviceOrderCount` | 对账周期内 `delta_service_order` 数量 |
+| `serviceOrderAmount` | SUM(service_amount) |
+| `settlementCount` | 对账周期内 `delta_worker_settlement` 数量 |
+| `settlementAmount` | SUM(worker_amount) |
+| `paidSettlementAmount` | SUM(worker_amount) WHERE status=3（已打款） |
+| `refundCount` | 对账周期内 `delta_refund_record` 数量 |
+| `refundAmount` | SUM(refund_amount) |
+| `expectedPlatformAmount` | platformFeeTotal - completedRefundAmount + recoveredAmount |
+| `actualPlatformAmount` | SUM(platform_fee) from delta_service_order |
+| `differenceAmount` | actualPlatformAmount - expectedPlatformAmount |
+
+> ⚠️ **限制说明**：`expectedPlatformAmount` 包含平台佣金-已完成退款+已追回金额。`actualPlatformAmount` 当前等于服务订单平台佣金总和。差异可能来源于跨周期退款或追回。
+
+---
+
+## 119. 第八阶段权限编码
+
+| 权限编码 | 覆盖接口 |
+|----------|----------|
+| `delta:statistics:query` | 运营统计全部5个接口 |
+| `delta:finance:query` | 财务汇总全部5个接口 |
+| `delta:finance-reconciliation:query` | 对账分页、详情 |
+| `delta:finance-reconciliation:generate` | 生成对账 |
+| `delta:finance-reconciliation:confirm` | 确认对账 |
+| `delta:finance-reconciliation:retry` | 重试对账 |
+| `delta:finance-reconciliation:cancel` | 取消对账 |
+| `delta:finance-reconciliation:export` | 导出对账 Excel |
+
+---
+
+## 120. 第八阶段错误码
+
+### 运营统计（1-020-022）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020022000` | `STATISTICS_DATE_RANGE_INVALID` | 时间范围不合法 |
+| `1020022001` | `STATISTICS_GRANULARITY_INVALID` | 统计粒度不合法 |
+| `1020022002` | `STATISTICS_RANGE_TOO_LARGE` | 时间范围不能超过366天 |
+
+### 财务对账（1-020-023）
+
+| 错误码 | 枚举常量 | 含义 |
+|--------|----------|------|
+| `1020023000` | `FINANCE_RECONCILIATION_NOT_EXISTS` | 对账记录不存在 |
+| `1020023001` | `FINANCE_RECONCILIATION_DUPLICATE` | 该日期已存在对账记录 |
+| `1020023002` | `FINANCE_RECONCILIATION_STATUS_NOT_ALLOWED` | 对账状态不允许此操作 |
+| `1020023003` | `FINANCE_RECONCILIATION_CALCULATE_FAILED` | 对账计算失败 |
+| `1020023004` | `FINANCE_RECONCILIATION_ALREADY_CONFIRMED` | 对账已确认 |
+| `1020023005` | `FINANCE_RECONCILIATION_ALREADY_CANCELED` | 对账已取消 |
+| `1020023006` | `FINANCE_RECONCILIATION_CONFIRM_REMARK_TOO_LONG` | 确认备注过长（最大500字） |
+| `1020023007` | `FINANCE_RECONCILIATION_CANCEL_REASON_REQUIRED` | 取消原因不能为空 |
+| `1020023008` | `FINANCE_RECONCILIATION_CANCEL_REASON_TOO_LONG` | 取消原因过长（最大500字） |
+| `1020023009` | `FINANCE_RECONCILIATION_DATE_REQUIRED` | 对账日期不能为空 |
+| `1020023010` | `FINANCE_RECONCILIATION_EXPORT_OVER_LIMIT` | 导出数据超过最大限制（最多10000条） |
+
+---
+
+## 121. 并发和多租户规则
+
+### 运营统计 / 财务汇总
+
+| 项 | 规则 |
+|----|------|
+| 事务 | 只读或默认 |
+| 时间范围 | 最大366天 |
+| 租户隔离 | MyBatis-Plus Tenant 插件自动过滤 |
+| 缓存 | **无**，每次实时查询 |
+
+### 财务对账
+
+| 场景 | 机制 |
+|------|------|
+| 生成防重 | 数据库唯一约束 `uk_tenant_reconciliation_date(tenant_id, reconciliation_date, deleted)` |
+| 确认 | CAS 更新 status + version 乐观锁 |
+| 重试 | 直接更新（仅 FAILED 可执行） |
+| 取消 | CAS 更新 status + version |
+| 终态保护 | CONFIRMED、CANCELED 不可再变更 |
+| 租户隔离 | DO 继承 `TenantBaseDO`；Mapper 查询自动带租户过滤 |
+
+---
+
+## 122. 菜单 SQL 建议
+
+| 菜单 | 父级 | Vue 组件路径 | icon |
+|------|------|-------------|------|
+| 运营中心 | 根目录 | — | chart |
+| 运营统计 | 运营中心 | `delta/statistics/index` | chart |
+| 财务汇总 | 运营中心 | `delta/finance/index` | money |
+| 财务对账 | 运营中心 | `delta/financeReconciliation/index` | form |
+
+完整 SQL 见 `sql/mysql/delta_phase8_menu.sql`。
+
+---
+
+## 123. 第八阶段 Vue3 对接注意事项
+
+### 能对接的 Admin 模块
+
+**运营统计**（`/delta/statistics`）：
+
+| 页面 | URL | 权限 |
+|------|-----|------|
+| 运营总览 | GET /delta/statistics/overview | delta:statistics:query |
+| 订单趋势 | GET /delta/statistics/order-trend | delta:statistics:query |
+| 订单状态分布 | GET /delta/statistics/order-status-distribution | delta:statistics:query |
+| 售后资金统计 | GET /delta/statistics/after-sale-summary | delta:statistics:query |
+| 打手排行 | GET /delta/statistics/worker-ranking | delta:statistics:query |
+
+**财务汇总**（`/delta/finance`）：
+
+| 页面 | URL | 权限 |
+|------|-----|------|
+| 财务总览 | GET /delta/finance/summary | delta:finance:query |
+| 财务趋势 | GET /delta/finance/trend | delta:finance:query |
+| 结算汇总 | GET /delta/finance/settlement-summary | delta:finance:query |
+| 退款汇总 | GET /delta/finance/refund-summary | delta:finance:query |
+| 追回汇总 | GET /delta/finance/recovery-summary | delta:finance:query |
+
+**财务对账**（`/delta/finance-reconciliation`）：
+
+| 页面 | URL | 权限 |
+|------|-----|------|
+| 对账分页 | GET /delta/finance-reconciliation/page | delta:finance-reconciliation:query |
+| 对账详情 | GET /delta/finance-reconciliation/get | delta:finance-reconciliation:query |
+| 生成对账 | POST /delta/finance-reconciliation/generate | delta:finance-reconciliation:generate |
+| 确认对账 | POST /delta/finance-reconciliation/confirm | delta:finance-reconciliation:confirm |
+| 重试 | POST /delta/finance-reconciliation/retry | delta:finance-reconciliation:retry |
+| 取消 | POST /delta/finance-reconciliation/cancel | delta:finance-reconciliation:cancel |
+| 导出 Excel | GET /delta/finance-reconciliation/export-excel | delta:finance-reconciliation:export |
+
+### 数据类型注意事项
+
+| 项 | 类型/注意 |
+|----|-----------|
+| 金额 | 所有金额字段单位**分**，前端显示时 ÷ 100 |
+| 对账差异 | differenceAmount 正数=实际>预期，负数=实际<预期 |
+| 时间参数 | startTime/endTime 格式：`yyyy-MM-dd'T'HH:mm:ss`，startDate/endDate 格式：`yyyy-MM-dd` |
+| granularity | DAY/WEEK/MONTH 字符串 |
+| rankingType | ORDER_COUNT/COMPLETED_COUNT/SERVICE_AMOUNT/SETTLEMENT_AMOUNT |
+| ID | Long 类型 |
+| 分页 | pageNo/pageSize，继承 PageParam |
+
+---
+
+## 124. 第八阶段后端尚未提供的内容
+
+| 内容 | 说明 |
+|------|------|
+| 运营统计导出 | 未实现 |
+| 财务汇总导出 | 未实现 |
+| 服务项目排行 | 未实现 |
+| 趋势按周/月（对账趋势） | 当前 DAY/WEEK/MONTH 需从 service_order 聚合 |
+
+> **第八阶段后端核心功能完成**：运营统计（5接口）、财务汇总（5接口）、财务对账（7接口含导出）、测试（4个类51个用例）均已实现并通过 Maven 编译与测试。
+
+---
+
+## 124. 第九阶段：多商户化 - 俱乐部入驻与平台管理
+
+> 本阶段实现俱乐部入驻申请、平台审核、俱乐部档案、服务范围管理。
+> 本阶段只修改 Java 后端、SQL、测试和接口文档，不修改 Vue3 和 UniApp。
+
+### 124.1 租户关联方式
+
+当前 `system` 模块的 `TenantService.createTenant(TenantSaveReqVO)` 需要以下必填字段：
+- `name`（租户名）
+- `contactName`（联系人）
+- `status`（状态）
+- `packageId`（套餐编号）
+- `expireTime`（过期时间）
+- `accountCount`（账号数量）
+- `username`（管理员账号，4-30 字符）
+- `password`（密码，4-16 位）
+
+这些字段在程序化审核流程中无法自动确定。因此**审核通过接口 `POST /delta/club-application/approve` 要求传入已有 `tenantId`**，
+平台管理员需先在"系统管理 > 租户管理"中创建租户，然后在入驻审核中关联。
+
+> **当前限制**：Delta 模块不自动创建 `system_tenant`，必须通过系统管理界面手动创建后关联。
+
+### 124.2 数据库新增表
+
+| 表名 | 说明 | 继承 |
+|------|------|------|
+| `delta_club_application` | 俱乐部入驻申请 | `BaseDO`（无 tenant_id） |
+| `delta_club_profile` | 俱乐部档案 | `TenantBaseDO` |
+| `delta_club_service_scope` | 俱乐部服务范围 | `TenantBaseDO` |
+
+**唯一约束**：
+- `delta_club_profile.uk_tenant_id` — 一个租户一个俱乐部
+- `delta_club_profile.uk_club_code` — 俱乐部编码全局唯一
+- `delta_club_profile.uk_application_id` — 申请只能产出一次
+- `delta_club_service_scope.uk_tenant_profile_type` — 同一租户下，(clubProfileId, serviceType) 唯一
+
+### 124.3 状态枚举
+
+#### 124.3.1 入驻申请状态 `DeltaClubApplicationStatusEnum`
+
+| 值 | 名称 | 终态 |
+|----|------|------|
+| 0  | 待审核 (PENDING)    | 否 |
+| 1  | 已通过 (APPROVED)   | **是** |
+| 2  | 已拒绝 (REJECTED)   | **是** |
+| 3  | 已撤销 (CANCELED)   | **是** |
+
+**状态矩阵**：
+```
+提交  -> PENDING
+PENDING -> APPROVED  (审核通过)
+PENDING -> REJECTED  (审核拒绝)
+PENDING -> CANCELED  (会员撤销)
+```
+
+#### 124.3.2 俱乐部经营状态 `DeltaClubBusinessStatusEnum`
+
+| 值 | 名称 | 说明 |
+|----|------|------|
+| 0  | 停用 (DISABLED) | 禁止新经营活动 |
+| 1  | 启用 (ENABLED)  | 审核通过后默认启用 |
+
+**注意**：俱乐部停用只限制 Delta 业务，**不修改** `system_tenant.status`。
+
+### 124.4 App API — 入驻申请
+
+**Controller**: `AppDeltaClubApplicationController`
+**前缀**: `/app-api/delta/club-application`（实际 `@RequestMapping("/delta/club-application")`）
+
+#### POST /delta/club-application/submit — 提交入驻申请
+
+- **权限**：无（会员登录即可）
+- **ReqVO**: `AppDeltaClubApplicationSubmitReqVO`
+  - `clubName` (String, 必填, ≤100字)
+  - `contactName` (String, 必填, ≤50字)
+  - `contactMobile` (String, 必填, ≤20位)
+  - `contactWechat` (String, ≤50字)
+  - `description` (String, ≤2000字)
+  - `logoUrl` (String, ≤500字)
+  - `qualificationUrls` (String, ≤3000字, JSON数组)
+- **RespVO**: `Long`（申请ID）
+- **规则**：
+  - `applicantMemberId` 从当前登录用户获取
+  - 同一会员同时只能存在一条 PENDING 申请
+  - 已有俱乐部档案的 owner 不允许重复申请
+  - 生成申请编号 (DCA + yyyyMMddHHmmss + 自增)
+  - 并发保护：Redisson 分布式锁 `delta:club-application:submit:{memberId}`（等待3s，租约10s）
+
+#### GET /delta/club-application/get — 查询我的最新申请
+
+- **权限**：会员登录
+- **ReqVO**: 无（从 token 获取 memberId）
+- **RespVO**: `AppDeltaClubApplicationRespVO`
+  - 包含所有申请字段 + `applicationStatusName`
+  - 无申请时返回 `{"applicationStatus":0, "applicationStatusName":"未申请"}`
+- **规则**：不得通过 memberId 查询其他人的申请
+
+#### POST /delta/club-application/cancel — 撤销申请
+
+- **权限**：会员登录
+- **ReqVO**: 无（从 token 获取 memberId）
+- **RespVO**: `Boolean`
+- **规则**：仅 PENDING 可撤销，使用 CAS 乐观锁（`WHERE id=? AND application_status=PENDING AND version=?`）
+- **事件**：发布 `CLUB_APPLICATION_CANCELED` 到 Outbox（含 payload: applicationNo, clubName, applicationStatus）
+
+### 124.5 Admin API — 入驻审核
+
+**Controller**: `DeltaClubApplicationController`
+**前缀**: `/admin-api/delta/club-application`（实际 `@RequestMapping("/delta/club-application")`）
+
+#### GET /delta/club-application/page — 分页查询
+
+- **权限**: `delta:club-application:query`
+- **ReqVO**: `DeltaClubApplicationPageReqVO`
+  - `applicationNo` (String)
+  - `clubName` (String, 模糊)
+  - `applicantMemberId` (Long)
+  - `contactMobile` (String)
+  - `applicationStatus` (Integer)
+  - `createTime` (LocalDateTime[])
+- **RespVO**: `PageResult<DeltaClubApplicationRespVO>`
+  - 含 `memberNickname`、`memberAvatar`（批量查询会员信息，反 N+1）
+  - 含 `applicationStatusName`
+
+#### GET /delta/club-application/get — 详情查询
+
+- **权限**: `delta:club-application:query`
+- **ReqVO**: `id` (Long, 必填)
+- **RespVO**: `DeltaClubApplicationRespVO`
+
+#### POST /delta/club-application/approve — 审核通过
+
+- **权限**: `delta:club-application:audit`
+- **ReqVO**: `DeltaClubApplicationApproveReqVO`
+  - `id` (Long, 必填) — 申请ID
+  - `tenantId` (Long, 必填) — 已有租户ID（需提前在系统管理中创建）
+  - `platformCommissionRate` (Integer, 必填) — 万分制，0-10000
+  - `maxConcurrentOrders` (Integer) — 最大并发订单数
+  - `serviceTypes` (List<Integer>, 必填) — 服务类型 1/2/3
+  - `remark` (String) — 审核备注
+- **RespVO**: `Boolean`
+- **事务流程**：
+  1. 校验申请 PENDING + 租户有效 + 租户无重复档案
+  2. 校验服务类型合法（复用 `ServiceTypeEnum`）
+  3. 校验抽成比例范围（0-10000）
+  4. 创建 `delta_club_profile`（生成 clubCode，默认启用）
+  5. 创建 `delta_club_service_scope`
+  6. 更新申请为 APPROVED（乐观锁）
+  7. 发布 `CLUB_APPLICATION_APPROVED` + `CLUB_CREATED` 事件到 Outbox
+
+#### POST /delta/club-application/reject — 审核拒绝
+
+- **权限**: `delta:club-application:audit`
+- **ReqVO**: `DeltaClubApplicationRejectReqVO`
+  - `id` (Long, 必填)
+  - `reason` (String, 必填, ≤500字)
+- **RespVO**: `Boolean`
+- **规则**：仅 PENDING 可拒绝
+
+### 124.6 Admin API — 俱乐部管理
+
+**Controller**: `DeltaClubController`
+**前缀**: `/admin-api/delta/club`（实际 `@RequestMapping("/delta/club")`）
+
+#### GET /delta/club/page — 分页查询
+
+- **权限**: `delta:club:query`
+- **ReqVO**: `DeltaClubPageReqVO`
+  - `clubCode` (String)
+  - `clubName` (String, 模糊)
+  - `ownerMemberId` (Long)
+  - `businessStatus` (Integer)
+  - `createTime` (LocalDateTime[])
+- **RespVO**: `PageResult<DeltaClubRespVO>`（不含服务范围列表）
+
+#### GET /delta/club/get — 详情查询
+
+- **权限**: `delta:club:query`
+- **ReqVO**: `id` (Long, 必填)
+- **RespVO**: `DeltaClubRespVO`（含服务范围列表 `serviceScopes`，每个含 `serviceTypeName`）
+
+#### GET /delta/club/get-current — 当前租户俱乐部
+
+- **权限**: `delta:club:query`
+- **ReqVO**: 无（从 `TenantContextHolder` 获取 tenantId）
+- **RespVO**: `DeltaClubRespVO`
+- **规则**：仅返回当前租户数据，不读取其他租户
+
+#### PUT /delta/club/update — 更新档案
+
+- **权限**: `delta:club:update`
+- **ReqVO**: `DeltaClubUpdateReqVO`
+  - `id` (Long, 必填)
+  - `clubName` (String, 必填)
+  - `contactName` (String)
+  - `contactMobile` (String)
+  - `contactWechat` (String)
+  - `logoUrl` (String)
+  - `description` (String, ≤500字)
+  - `platformCommissionRate` (Integer, 0-10000)
+  - `maxConcurrentOrders` (Integer)
+  - `remark` (String, ≤500字)
+- **RespVO**: `Boolean`
+- **禁止修改**：`tenantId`、`ownerMemberId`、`applicationId`、`clubCode`
+- **跨租户规则**：读取时 `TenantUtils.executeIgnore()` 忽略租户过滤，写入时 `TenantUtils.execute(clubTenantId)` 进入目标租户上下文
+- **CAS 规则**：`WHERE id=? AND version=?` → `SET version = version + 1`
+- **tenantId 来源**：根据俱乐部档案 `tenant_id`，不信任前端
+
+#### PUT /delta/club/update-status — 更新经营状态
+
+- **权限**: `delta:club:update`
+- **ReqVO**: `DeltaClubUpdateStatusReqVO`
+  - `id` (Long, 必填)
+  - `businessStatus` (Integer, 必填, 0或1)
+  - `reason` (String, 必填, ≤500字)
+- **RespVO**: `Boolean`
+- **规则**：
+  - 停用后禁止新经营活动，不删除历史订单
+  - 不取消正在履约订单
+  - **不修改** `system_tenant.status`
+- **跨租户规则**：读取时 `TenantUtils.executeIgnore()`，写入时 `TenantUtils.execute(clubTenantId)`
+- **CAS 规则**：`WHERE id=? AND business_status=? AND version=?` → `SET business_status=?, version = version + 1`
+- **tenantId 来源**：根据俱乐部档案 `tenant_id`
+- **事件**：发布 `CLUB_STATUS_CHANGED` 到 Outbox（在目标租户上下文中）
+
+#### PUT /delta/club/update-service-scope — 更新服务范围
+
+- **权限**: `delta:club:update`
+- **ReqVO**: `DeltaClubUpdateServiceScopeReqVO`
+  - `clubId` (Long, 必填)
+  - `serviceTypes` (List<Integer>, 必填, 最少1个)
+- **RespVO**: `Boolean`
+- **规则**：
+  - 事务内全量替换（先删后建）
+  - 不影响历史订单
+- **跨租户规则**：读取时 `TenantUtils.executeIgnore()`，删除和新增均在 `TenantUtils.execute(clubTenantId)` 内执行
+- **tenantId 来源**：根据俱乐部档案 `tenant_id`
+- **事件**：发布 `CLUB_SERVICE_SCOPE_CHANGED` 到 Outbox（在目标租户上下文中）
+
+### 124.7 权限与菜单
+
+| 权限标识 | 说明 | 菜单 ID |
+|----------|------|---------|
+| `delta:club-application:query` | 入驻申请查询 | 7082 |
+| `delta:club-application:audit` | 入驻申请审核 | 7083 |
+| `delta:club:query` | 俱乐部查询 | 7085 |
+| `delta:club:update` | 俱乐部更新 | 7086 |
+
+**菜单结构**（ID 7080 起）：
+```
+商户管理 (7080)
+├── 入驻申请 (7081) — 组件 delta/clubApplication/index
+└── 俱乐部管理 (7084) — 组件 delta/club/index
+```
+
+### 124.8 错误码
+
+| 错误码 | 常量 | 说明 |
+|--------|------|------|
+| 1_020_024_000 | CLUB_APPLICATION_NOT_EXISTS | 入驻申请不存在 |
+| 1_020_024_001 | CLUB_APPLICATION_PENDING_EXISTS | 已有待审核申请 |
+| 1_020_024_002 | CLUB_APPLICATION_STATUS_NOT_ALLOWED | 申请状态不允许操作 |
+| 1_020_024_003 | CLUB_APPLICATION_ALREADY_APPROVED | 申请已通过 |
+| 1_020_024_004 | CLUB_APPLICATION_ALREADY_REJECTED | 申请已拒绝 |
+| 1_020_024_005 | CLUB_APPLICATION_ALREADY_CANCELED | 申请已撤销 |
+| 1_020_024_006 | CLUB_APPLICATION_REJECT_REASON_REQUIRED | 拒绝原因不能为空 |
+| 1_020_024_007 | CLUB_APPLICATION_TENANT_ID_REQUIRED | 须指定已有租户ID |
+| 1_020_024_008 | CLUB_APPLICATION_SUBMIT_BUSY | 提交过于频繁，请稍后重试 |
+| 1_020_025_000 | CLUB_NOT_EXISTS | 俱乐部不存在 |
+| 1_020_025_001 | CLUB_TENANT_DUPLICATE | 租户已存在俱乐部 |
+| 1_020_025_002 | CLUB_CODE_DUPLICATE | 俱乐部编码已存在 |
+| 1_020_025_003 | CLUB_OWNER_DUPLICATE | 会员已是其他俱乐部所有者 |
+| 1_020_025_004 | CLUB_STATUS_NOT_ALLOWED | 经营状态不允许操作 |
+| 1_020_025_005 | CLUB_COMMISSION_RATE_INVALID | 抽成比例不合法 |
+| 1_020_025_006 | CLUB_SERVICE_SCOPE_INVALID | 无效服务类型 |
+| 1_020_025_007 | CLUB_SERVICE_SCOPE_EMPTY | 服务范围不能为空 |
+| 1_020_025_008 | CLUB_UPDATE_FIELD_NOT_ALLOWED | 不允许修改该字段 |
+| 1_020_025_009 | CLUB_STATUS_REASON_REQUIRED | 变更原因不能为空 |
+
+**Phase 9 错误码总数：19 个**（入驻申请 9 个 + 俱乐部管理 10 个）
+
+### 124.9 多租户安全
+
+| 场景 | 处理方式 |
+|------|---------|
+| 申请表 | 继承 `BaseDO`，无 `tenant_id`，申请发生在租户建立前 |
+| 俱乐部档案 | 继承 `TenantBaseDO`，按 tenantId 隔离 |
+| 服务范围 | 继承 `TenantBaseDO`，按 tenantId 隔离 |
+| App 用户 | 只能查询自己的申请（通过 memberId） |
+| 当前俱乐部 | 只返回当前 `TenantContextHolder.tenantId` 的数据，不使用 `executeIgnore()` |
+| 平台 Admin 分页/查询 | `TenantUtils.executeIgnore()` 跨租户读取 |
+| 平台 Admin 写入（update/update-status/update-service-scope） | 先 `executeIgnore()` 读取目标俱乐部，再 `execute(clubTenantId)` 写入目标租户 |
+| 前端 tenantId | 不信任前端传入；写入时 tenantId 来自数据库记录 |
+| ID 越权 | 不通过 ID 猜测访问其他俱乐部 |
+
+### 124.10 并发与幂等
+
+| 场景 | 实现 |
+|------|------|
+| 提交申请防重复 | **Redisson 分布式锁** `delta:club-application:submit:{memberId}`（3s 等待 + 10s 租约），锁内重查 PENDING + 重查所有者 |
+| 审核状态更新 | CAS 乐观锁 `WHERE id=? AND application_status=PENDING AND version=?` → `SET version = version + 1` |
+| 经营状态变更 | CAS 乐观锁 `WHERE id=? AND business_status=? AND version=?` → `SET version = version + 1` |
+| 档案更新 | CAS 乐观锁 `WHERE id=? AND version=?` → `SET version = version + 1` |
+| approve 防重复创建 | 先查 `tenantId` 是否已有档案 |
+| 撤销/拒绝 | 状态检查 + CAS 乐观锁 |
+| 服务范围替换 | 事务内先删后建 |
+| insert DuplicateKeyException | 转换为 `CLUB_APPLICATION_PENDING_EXISTS` 业务错误 |
+| 获取锁失败 | 返回 `CLUB_APPLICATION_SUBMIT_BUSY` |
+| Outbox 事件 | 幂等键 `bizKey`，消费端 DuplicateKeyException 跳过 |
+| 锁释放 | finally 块中 `isHeldByCurrentThread()` 安全释放 |
+
+### 124.11 领域事件
+
+| 事件类型 | 触发时机 | 接收人 | 实现状态 |
+|----------|---------|--------|----------|
+| `CLUB_APPLICATION_SUBMITTED` | 会员提交申请 | ADMIN | 已发布 |
+| `CLUB_APPLICATION_APPROVED` | 审核通过 | SYSTEM | 已发布 |
+| `CLUB_APPLICATION_REJECTED` | 审核拒绝 | ADMIN（通知申请人） | 已发布 |
+| `CLUB_APPLICATION_CANCELED` | 会员撤销 | ADMIN（通知申请人，含 payload） | 已发布 |
+| `CLUB_CREATED` | 俱乐部档案创建 | SYSTEM | 已发布 |
+| `CLUB_STATUS_CHANGED` | 经营状态变更 | SYSTEM | 已发布 |
+| `CLUB_SERVICE_SCOPE_CHANGED` | 服务范围变更 | SYSTEM | 已发布 |
+
+所有事件通过 `DeltaEventPublisher`（Transactional Outbox）发布。撤销事件包含 payload（`applicationNo`、`clubName`、`applicationStatus`）。
+写入操作的事件在目标租户上下文（`TenantUtils.execute`）中发布。
+
+### 124.12 测试覆盖
+
+| 测试类 | 用例数 | 覆盖场景 |
+|--------|--------|---------|
+| `DeltaClubApplicationServiceImplTest` | 19 | 提交/锁重防/锁忙/唯一键冲突/所有者冲突/我的申请/撤销+事件/撤销CAS失败无事件/重复撤销无事件/审核通过/审核拒绝/租户重复/佣金校验/服务类型校验 |
+| `DeltaClubServiceImplTest` | 15 | 分页/详情/更新档案+CAS并发/佣金校验/启用停用+状态CAS/状态CAS并发/状态校验/服务范围替换/类型校验/跨租户写入3个 |
+| `DeltaClubApplicationControllerTest` | 5 | 分页/空结果/详情/null处理/审核通过/审核拒绝 |
+| `DeltaClubControllerTest` | 5 | 分页/详情/更新/状态变更/服务范围 |
+
+**Phase 9 总测试数：44 个**（19 + 15 + 5 + 5）
+
+### 124.13 Vue3 对接注意事项
+
+1. **入驻审核表单**：必须包含 `tenantId` 输入（提示管理员先在系统管理中创建租户）
+2. **审核通过字段**：`platformCommissionRate`（万分制）、`serviceTypes`（勾选1/2/3）、`maxConcurrentOrders`
+3. **俱乐部列表**：需要处理 `serviceScopes` 嵌套数组渲染 `serviceTypeName`
+4. **状态变更**：需要 `reason` 必填
+5. **组件路径**：`delta/clubApplication/index`、`delta/club/index`
+6. **App 端**：提交/查询/撤销三个接口，撤销按钮仅在 PENDING 状态显示
+7. **金额单位**：`platformCommissionRate` 为万分制整数，显示时 `(rate/100).toFixed(2) + "%"`
+
+### 124.14 第八阶段（参考：商品服务配置）相关
+
+- 商品服务配置的 `serviceType` (1-陪玩/2-护航/3-趣味单) 与俱乐部服务范围的 `serviceType` 完全相同
+- 俱乐部审核通过后创建的服务范围使用相同的 `ServiceTypeEnum` 值
+- 商品服务配置的 `commissionRate`（万分制）与俱乐部抽成比例使用相同单位
+
+### 124.15 后端尚未提供的内容
+
+| 内容 | 说明 |
+|------|------|
+| 自动创建 `system_tenant` | 需平台管理员手动操作后关联 |
+| 俱乐部管理员账号自动创建 | `TenantSaveReqVO` 需要 username/password 等不可程序化字段 |
+| App 端俱乐部资料查询 | 仅提供 `getMyLatestApplication`，未提供 `getMyClub` |
+| 平台公共订单市场 | 第十阶段范围 |
+| 商户保证金/提现/账期 | 不在本阶段范围 |
+| 子商户微信支付 | 不在本阶段范围 |
+
+---
+
+## 第十阶段：平台订单市场基础
+
+### 10.1 概述
+
+实现平台与多个俱乐部之间的订单市场最小闭环：
+平台选择符合条件的服务订单 → 发布到平台订单市场 → 符合资格的俱乐部查看可接订单 → 俱乐部抢单 → 平台记录订单归属俱乐部 → 后续履约阶段基于该归属继续派单。
+
+### 10.2 表结构
+
+#### delta_order_market_listing（平台订单市场挂牌表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | bigint | 主键 |
+| listing_no | varchar(32) | 挂牌编号（DML + 时间戳 + 自增），UNIQUE |
+| service_order_id | bigint | 服务订单ID，有索引 |
+| service_order_no | varchar(32) | 服务订单号 |
+| source_tenant_id | bigint | 订单来源租户ID |
+| service_type | tinyint | 服务类型：1-陪玩 2-护航 3-趣味单 |
+| service_amount | int | 服务金额（分） |
+| requirement_summary | varchar(2000) | 需求摘要（脱敏后） |
+| listing_status | tinyint | 挂牌状态：0-可抢 1-已被接单 2-已撤回 3-已过期 4-已关闭 |
+| publish_time | datetime | 发布时间 |
+| expire_time | datetime | 过期时间 |
+| claimed_club_id | bigint | 接单俱乐部档案ID |
+| claimed_club_tenant_id | bigint | 接单俱乐部租户ID |
+| claim_time | datetime | 接单时间 |
+| publisher_id | bigint | 发布人ID（当前登录管理员ID，由 Controller 层 `SecurityFrameworkUtils.getLoginUserId()` 获取并传入 Service） |
+| withdraw_reason | varchar(500) | 撤回原因 |
+| remark | varchar(500) | 备注 |
+| active_flag | tinyint | 活动标记：1-有效 0-无效，与 service_order_id 组成 UNIQUE 约束防止并发创建多个有效挂牌 |
+| version | int | 乐观锁版本号 |
+
+**说明**：订单市场属于平台级资源，继承 BaseDO（不含 tenant_id）。
+
+#### delta_order_market_log（市场操作日志表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | bigint | 主键 |
+| listing_id | bigint | 挂牌ID |
+| service_order_id | bigint | 服务订单ID |
+| operation_type | varchar(32) | 操作类型：PUBLISH/CLAIM/ASSIGN/WITHDRAW/EXPIRE/CLOSE/CLAIM_FAILED |
+| operator_type | varchar(20) | 操作方类型：PLATFORM/CLUB/SYSTEM |
+| operator_id | bigint | 操作人ID |
+| club_id | bigint | 操作俱乐部ID |
+| club_tenant_id | bigint | 操作俱乐部租户ID |
+| before_status | tinyint | 操作前状态 |
+| after_status | tinyint | 操作后状态 |
+| success | tinyint(1) | 是否成功 |
+| failure_reason | varchar(500) | 失败原因 |
+| remark | varchar(500) | 备注 |
+
+### 10.3 状态枚举
+
+#### 挂牌状态（DeltaOrderMarketStatusEnum）
+
+| 状态值 | 常量 | 名称 | 说明 |
+|--------|------|------|------|
+| 0 | AVAILABLE | 可抢 | 可被任何符合资格的俱乐部抢单 |
+| 1 | CLAIMED | 已被接单 | 已由俱乐部抢单或平台指定 |
+| 2 | WITHDRAWN | 已撤回 | 平台主动撤回 |
+| 3 | EXPIRED | 已过期 | 到期自动关闭 |
+| 4 | CLOSED | 已关闭 | 平台主动关闭 |
+
+**状态矩阵**：
+```
+发布 → AVAILABLE
+AVAILABLE → CLAIMED（俱乐部抢单/平台指定）
+AVAILABLE → WITHDRAWN（平台撤回）
+AVAILABLE → EXPIRED（定时过期）
+AVAILABLE → CLOSED（平台关闭）
+CLAIMED、WITHDRAWN、EXPIRED、CLOSED 为终态
+```
+
+#### 操作类型（DeltaOrderMarketOperationTypeEnum）
+
+| 类型 | 名称 | 说明 |
+|------|------|------|
+| PUBLISH | 发布挂牌 | 平台将订单发布到市场 |
+| CLAIM | 俱乐部抢单 | 俱乐部自主抢单 |
+| ASSIGN | 平台指定俱乐部 | 平台直接将订单指定给某俱乐部 |
+| WITHDRAW | 撤回挂牌 | 平台撤销已发布挂牌 |
+| EXPIRE | 过期关闭 | 系统自动过期 |
+| CLOSE | 平台关闭 | 平台主动关闭 |
+| CLAIM_FAILED | 抢单失败 | 俱乐部抢单失败 |
+
+### 10.4 平台 Admin 接口（DeltaOrderMarketController）
+
+**前缀**：`/delta/order-market`
+
+| 接口 | 方法 | 权限 | 说明 |
+|------|------|------|------|
+| `/page` | GET | `delta:order-market:query` | 挂牌分页查询 |
+| `/get` | GET | `delta:order-market:query` | 挂牌详情 |
+| `/logs` | GET | `delta:order-market:query` | 挂牌操作日志 |
+| `/publish` | POST | `delta:order-market:publish` | 发布到市场 |
+| `/withdraw` | POST | `delta:order-market:withdraw` | 撤回挂牌 |
+| `/assign` | POST | `delta:order-market:assign` | 平台指定俱乐部 |
+
+#### GET /delta/order-market/page
+
+请求（DeltaOrderMarketListingPageReqVO）：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| pageNo | Integer | 页码（默认1） |
+| pageSize | Integer | 每页大小（默认10） |
+| listingNo | String | 挂牌编号 |
+| serviceOrderNo | String | 服务订单号 |
+| serviceType | Integer | 服务类型 |
+| listingStatus | Integer | 挂牌状态 |
+| claimedClubId | Long | 接单俱乐部ID |
+| claimedClubTenantId | Long | 接单俱乐部租户ID |
+| publishTime | LocalDateTime[] | 发布时间范围 |
+| createTime | LocalDateTime[] | 创建时间范围 |
+
+响应：返回挂牌列表，包含状态名称和服务类型名称。
+
+**跨租户规则**：平台管理员使用 `TenantUtils.executeIgnore()` 读取。
+
+#### POST /delta/order-market/publish
+
+请求（DeltaOrderMarketPublishReqVO）：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| serviceOrderId | Long | 是 | 服务订单ID |
+| expireTime | LocalDateTime | 否 | 过期时间 |
+| requirementSummary | String | 否 | 需求摘要（脱敏） |
+| remark | String | 否 | 备注 |
+
+规则：
+- 服务订单必须真实存在
+- 服务订单状态必须是待派单(10)
+- 使用分布式锁 `delta:order-market:publish:{serviceOrderId}` 防止并发创建多个有效挂牌
+- 锁内重新校验：订单存在 + 状态可发布 + 无有效 AVAILABLE 挂牌
+- 同一服务订单不能存在 AVAILABLE 状态的挂牌（锁 + DB unique key `uk_service_order_active` 双保险）
+- 发布时间由后端生成
+- publisherId 由当前登录管理员通过 `SecurityFrameworkUtils.getLoginUserId()` 获取
+- requirementSummary 必须脱敏
+- 发布成功写日志（operatorId = publisherId）并发布 Outbox 事件
+
+#### POST /delta/order-market/withdraw
+
+请求（DeltaOrderMarketWithdrawReqVO）：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | Long | 是 | 挂牌ID |
+| reason | String | 是 | 撤回原因 |
+
+规则：仅 AVAILABLE 状态可撤回，使用 CAS 更新（同时设置 activeFlag=0 释放唯一约束）。operatorId 由 Controller 从登录态获取并传入。
+
+#### POST /delta/order-market/assign
+
+请求（DeltaOrderMarketAssignReqVO）：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | Long | 是 | 挂牌ID |
+| clubId | Long | 是 | 俱乐部档案ID |
+| remark | String | 否 | 备注 |
+
+规则：
+- 仅 AVAILABLE 可指定
+- 俱乐部必须存在且启用
+- 服务范围必须包含订单 serviceType
+- 未超过 maxConcurrentOrders（只统计对应服务订单非终态的 CLAIMED 挂牌）
+- 使用与抢单相同的锁 `delta:order-market:claim:{listingId}` 和 CAS
+- 锁内重新校验服务订单状态（recheckOrderStatus）
+- 指定成功后状态变为 CLAIMED，activeFlag 置 0
+- operatorId 由 Controller 从 `SecurityFrameworkUtils.getLoginUserId()` 获取
+
+### 10.5 俱乐部接口（DeltaClubOrderMarketController）
+
+**前缀**：`/delta/order-market`
+
+| 接口 | 方法 | 权限 | 说明 |
+|------|------|------|------|
+| `/available-page` | GET | `delta:order-market:claim` | 可抢订单分页 |
+| `/available-get` | GET | `delta:order-market:claim` | 可抢订单详情 |
+| `/claim` | POST | `delta:order-market:claim` | 俱乐部抢单 |
+| `/my-claimed-page` | GET | `delta:order-market:query` | 我的已接订单 |
+
+#### GET /delta/order-market/available-page
+
+规则：
+- 获取当前 tenantId → 查询对应的俱乐部
+- 俱乐部必须 ENABLED
+- 只返回 AVAILABLE 且未过期的挂牌
+- **在数据库层面按 `serviceType IN (俱乐部服务范围)` 过滤**，不在 Java 内存中先取全量再过滤
+- 不返回买家敏感信息
+
+#### POST /delta/order-market/claim
+
+请求（DeltaOrderMarketClaimReqVO）：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | Long | 是 | 挂牌ID |
+
+俱乐部身份由当前 tenantId 确定，前端不得传入 clubId 或 tenantId。
+
+规则：
+1. 获取挂牌分布式锁 `delta:order-market:claim:{listingId}`（与 assign 共用同一把锁）
+2. 锁内重新查询挂牌
+3. 状态必须 AVAILABLE
+4. 未过期
+5. 当前租户必须有关联俱乐部
+6. 俱乐部状态必须 ENABLED
+7. 服务范围匹配
+8. 未超过 maxConcurrentOrders（只统计对应服务订单非终态的）
+9. **锁内重新校验服务订单状态**（recheckOrderStatus，防止锁外被取消/派单/进入售后）
+10. CAS 更新为 CLAIMED（同时设置 activeFlag=0）
+11. 写 claimedClubId 和 claimedClubTenantId
+12. 写 claimTime
+13. 写操作日志
+14. CAS 成功才发布 Outbox 事件
+15. 释放锁
+
+### 10.6 订单归属设计
+
+**核心原则**：不得通过直接修改 `delta_service_order.tenant_id` 来转移订单归属。`tenant_id` 是数据隔离边界，不是可随意转移的业务归属字段。
+
+**当前方案**：使用独立的市场挂牌和归属关系表记录：
+
+```
+delta_order_market_listing.claimed_club_id → 俱乐部档案ID
+delta_order_market_listing.claimed_club_tenant_id → 俱乐部租户ID
+delta_service_order.tenant_id → 保持不变（原租户）
+```
+
+**明确说明**：市场归属关系 ≠ 修改订单 tenant_id。后续履约阶段再根据实际业务设计接入俱乐部派单。
+
+### 10.7 资格校验（DeltaOrderMarketEligibilityService）
+
+统一校验以下条件（平台 assign 和俱乐部 claim 复用）：
+
+| 校验项 | 错误码 |
+|--------|--------|
+| 当前租户是否存在俱乐部档案 | ORDER_MARKET_CLUB_NOT_EXISTS |
+| 俱乐部是否 ENABLED | ORDER_MARKET_CLUB_DISABLED |
+| 服务范围是否包含订单 serviceType | ORDER_MARKET_SERVICE_SCOPE_NOT_MATCH |
+| 当前进行中订单数 < maxConcurrentOrders | ORDER_MARKET_CLUB_CAPACITY_FULL |
+| 挂牌是否 AVAILABLE | ORDER_MARKET_STATUS_NOT_ALLOWED |
+| 挂牌是否过期 | ORDER_MARKET_EXPIRED |
+| 服务订单是否仍允许分配 | ORDER_MARKET_ORDER_STATUS_NOT_ALLOWED |
+
+**最大并发订单数口径**：
+1. 查询 `delta_order_market_listing` 中 `claimed_club_tenant_id = 当前俱乐部租户ID` 且 `listing_status = CLAIMED` 的挂牌
+2. 对每个挂牌，跨租户查询对应的 `delta_service_order` 状态
+3. 排除服务订单处于终态的挂牌：已完成(80)、已取消(110)、售后中(90)、纠纷中(100)
+4. 只统计对应服务订单处于非终态的挂牌数
+
+即：`claimedClubTenantId = 当前俱乐部 AND listingStatus = CLAIMED AND 服务订单处于真实非终态`
+
+**实现方式**：通过 `ServiceOrderStatusEnum.isCompleted/isCanceled/isAfterSaleOrDispute` 方法判断终态，不使用硬编码数字。
+
+### 10.8 分布式锁
+
+| 锁 Key | 等待时间 | 租约时间 | 用途 |
+|--------|---------|---------|------|
+| `delta:order-market:claim:{listingId}` | 3s | 10s | 抢单/指定互斥 |
+| `delta:order-market:publish:{serviceOrderId}` | 3s | 10s | 防止同一服务订单并发创建多个有效挂牌 |
+
+平台 assign 和俱乐部 claim 使用同一把挂牌锁，互斥保证只有一个俱乐部能成功接单。
+
+publish 使用独立锁按 serviceOrderId 串行化，锁内重新校验防重。
+
+锁使用 Redisson 原生 RLock（tryLock + try/finally + isHeldByCurrentThread 安全释放）。
+
+### 10.9 CAS 和数据库约束
+
+抢单 CAS 条件：
+```sql
+WHERE id = ?
+  AND listing_status = 0  -- AVAILABLE
+  AND version = ?
+  AND claimed_club_id IS NULL
+SET listing_status = 1,  -- CLAIMED
+    claimed_club_id = ?,
+    claimed_club_tenant_id = ?,
+    claim_time = ?,
+    version = version + 1
+```
+
+**数据库约束**：
+- `listing_no` UNIQUE 约束
+- `uk_service_order_active (service_order_id, active_flag)` UNIQUE 约束：同一 serviceOrderId 只有一个 active_flag=1 的挂牌
+- CAS 将挂牌转为终态时同步设置 `active_flag = 0`，后续可重新为该 serviceOrderId 创建新挂牌
+- 分布式锁+UNIQUE约束+锁内校验三重保护
+
+### 10.10 过期处理
+
+定时任务 `DeltaOrderMarketExpireJob`（实现 `JobHandler` 接口，通过项目 Quartz 定时任务机制注册）：
+- 扫描 AVAILABLE 且 expireTime <= now 的挂牌
+- 分批处理（每批50条）
+- CAS 更新为 EXPIRED（同时设置 activeFlag=0）
+- CAS 成功才写日志和发布过期事件
+- bizKey: `market:{listingNo}:EXPIRE`（不含时间戳，幂等）
+- 多实例执行幂等（CAS 确保）
+- CAS 失败不重复发布事件
+- 单次任务失败不影响后续批次
+
+### 10.11 敏感信息保护
+
+面向所有俱乐部的市场接口禁止返回：
+- 买家手机号、微信号、OpenID、UnionID
+- 登录账号、支付单号、退款账号
+- 完整地址、其他个人敏感数据
+
+允许返回：服务类型、金额、脱敏需求摘要、发布时间、过期时间。
+
+只有俱乐部成功接单后，后续履约阶段才按真实权限开放必要信息。
+
+### 10.12 Outbox 事件
+
+| 事件类型 | 触发时机 | 接收人 |
+|----------|---------|--------|
+| ORDER_MARKET_PUBLISHED | 挂牌发布 | ADMIN |
+| ORDER_MARKET_CLAIMED | 俱乐部抢单成功 | ADMIN |
+| ORDER_MARKET_ASSIGNED | 平台指定俱乐部 | ADMIN |
+| ORDER_MARKET_WITHDRAWN | 平台撤回挂牌 | ADMIN |
+| ORDER_MARKET_EXPIRED | 挂牌过期 | SYSTEM |
+
+事件属性：
+- aggregateType: `ORDER_MARKET_LISTING`
+- aggregateId: listingId
+- bizKey: `market:{listingNo}:{eventType}`（幂等）
+- tenantId: sourceTenantId
+- CLAIMED/ASSIGNED 事件包含 claimedClubId 和 claimedClubTenantId
+- payload 不包含敏感信息
+- 在事务成功后进入 Outbox
+
+### 10.13 错误码（1-020-026-xxx）
+
+| 错误码 | 常量 | 说明 |
+|--------|------|------|
+| 1_020_026_000 | ORDER_MARKET_LISTING_NOT_EXISTS | 挂牌不存在 |
+| 1_020_026_001 | ORDER_MARKET_ORDER_NOT_EXISTS | 服务订单不存在 |
+| 1_020_026_002 | ORDER_MARKET_ORDER_STATUS_NOT_ALLOWED | 服务订单状态不允许发布 |
+| 1_020_026_003 | ORDER_MARKET_ALREADY_PUBLISHED | 服务订单已有有效挂牌 |
+| 1_020_026_004 | ORDER_MARKET_STATUS_NOT_ALLOWED | 挂牌状态不允许此操作 |
+| 1_020_026_005 | ORDER_MARKET_ALREADY_CLAIMED | 已被接单 |
+| 1_020_026_006 | ORDER_MARKET_EXPIRED | 已过期 |
+| 1_020_026_007 | ORDER_MARKET_CLAIM_BUSY | 订单处理中 |
+| 1_020_026_008 | ORDER_MARKET_CLUB_NOT_EXISTS | 当前租户没有俱乐部 |
+| 1_020_026_009 | ORDER_MARKET_CLUB_DISABLED | 俱乐部已停用 |
+| 1_020_026_010 | ORDER_MARKET_SERVICE_SCOPE_NOT_MATCH | 服务范围不匹配 |
+| 1_020_026_011 | ORDER_MARKET_CLUB_CAPACITY_FULL | 订单已达上限 |
+| 1_020_026_012 | ORDER_MARKET_WITHDRAW_REASON_REQUIRED | 撤回原因必填 |
+| 1_020_026_013 | ORDER_MARKET_ASSIGN_CLUB_INVALID | 指定俱乐部无效 |
+| 1_020_026_014 | ORDER_MARKET_CAS_FAILED | CAS更新失败 |
+| 1_020_026_015 | ORDER_MARKET_ORDER_ALREADY_ASSIGNED | 订单已分配俱乐部 |
+
+### 10.14 权限和菜单
+
+权限：
+- `delta:order-market:query` - 查询
+- `delta:order-market:publish` - 发布
+- `delta:order-market:withdraw` - 撤回
+- `delta:order-market:assign` - 指定
+- `delta:order-market:claim` - 抢单
+
+菜单结构：
+```
+订单市场
+├── 平台挂牌管理（delta/orderMarket/index）
+└── 可接订单（delta/orderMarket/available）
+```
+
+### 10.15 Vue3 对接注意事项
+
+1. **挂牌管理页面**：组件路径 `delta/orderMarket/index`
+2. **可接订单页面**：组件路径 `delta/orderMarket/available`
+3. **金额单位**：所有金额为分（整数），显示时 `/100` 转元
+4. **抢单按钮**：需处理 `CLAIM_BUSY` 错误码，提示用户稍后重试
+5. **tenantId**：俱乐部身份由登录态自动带入，前端无需传入
+6. **发布挂牌**：只能选择状态为"待派单"的服务订单
+7. **指定俱乐部**：需弹窗选择俱乐部，校验通过后才允许提交
+
+### 10.16 后端尚未提供的内容
+
+| 内容 | 说明 |
+|------|------|
+| 自动分账 | 后续阶段 |
+| 俱乐部报价/竞价 | 不在本阶段范围 |
+| 跨俱乐部转单 | 不在本阶段范围 |
+| 已接订单履约派单 | 见第 12 节俱乐部履约 App API |
+| UniApp 抢单页面 | 不在本阶段范围 |
+| Vue 页面 | 不在本阶段范围 |
+
+## 11. UniApp 俱乐部身份与订单市场接口
+
+### 11.1 路径规范修正
+
+以下 App Controller 的类级路径统一使用 `/delta/**`。网关会统一添加 `/app-api` 前缀，Controller 内不得重复声明：
+
+- `/delta/order-pool`
+- `/delta/worker-order`
+- `/delta/service-order`
+- `/delta/worker-settlement`
+- `/delta/notification`
+
+### 11.2 俱乐部身份
+
+`GET /app-api/delta/club/identity`
+
+Query 和 Body：无。
+
+响应字段：`hasApplication`、`applicationStatus`、`applicationStatusName`、`rejectReason`、`isClubOwner`、`canUseOrderMarket`、`clubId`、`clubCode`、`clubName`、`logoUrl`、`description`、`businessStatus`、`businessStatusName`、`platformCommissionRate`、`maxConcurrentOrders`、`serviceScopes`。`serviceScopes` 子项包含 `serviceType`、`serviceTypeName`、`enabled`。
+
+- 会员身份只取自服务端登录态 `getLoginUserId()`，客户端不能传入 `memberUserId`、`tenantId` 或 `clubId`。
+- 俱乐部通过 `delta_club_profile.owner_member_id = 当前会员 ID` 跨租户安全查询。
+- 同时返回当前会员的最近一次入驻申请、俱乐部经营状态和已配置的服务范围。
+- 只有存在俱乐部档案且经营状态为启用时，`canUseOrderMarket` 才为 `true`。
+- 响应不包含 `tenantId`、`ownerMemberId`、联系方式、申请内部关联 ID、备注和版本号。
+
+### 11.3 俱乐部订单市场
+
+基础路径：`/app-api/delta/order-market`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/available-page?pageNo=1&pageSize=10` | 按当前会员所属俱乐部的已启用服务范围查询可抢挂牌 |
+| GET | `/available-get?id={listingId}` | 查询可抢挂牌详情并执行完整接单资格校验 |
+| POST | `/claim` | 请求体仅包含 `id`（挂牌 ID），由登录会员身份确定接单俱乐部 |
+| GET | `/my-claimed-page?pageNo=1&pageSize=10` | 按可信俱乐部租户查询当前俱乐部已接挂牌 |
+
+`POST /claim` 请求体：
+
+```json
+{"id": 1}
+```
+
+App 挂牌响应字段：`id`、`listingNo`、`serviceType`、`serviceTypeName`、`serviceAmount`、`requirementSummary`、`listingStatus`、`listingStatusName`、`publishTime`、`expireTime`、`claimTime`。
+
+所有市场接口均禁止客户端传入 `memberUserId`、`tenantId`、`clubId`、`clubTenantId`、`ownerMemberId`、`operatorId`、`sourceTenantId` 或 `claimedClubTenantId`。
+
+查询和抢单均先按 `owner_member_id` 解析俱乐部，并校验俱乐部存在且已启用。可抢分页按启用的服务类型在数据库层过滤；详情和抢单继续校验挂牌状态、过期时间、服务订单状态、服务范围和并发容量。
+
+抢单沿用后台已有的同一条核心流程：挂牌分布式锁、锁内重读与复核、乐观锁 CAS 更新、操作日志和 Outbox 事件。并发失败返回 `ORDER_MARKET_CAS_FAILED`，锁竞争返回 `ORDER_MARKET_CLAIM_BUSY`。
+
+App 挂牌响应仅包含页面展示所需的挂牌 ID、挂牌编号、服务类型、金额、脱敏需求摘要、挂牌状态及时间；不返回内部服务订单 ID、来源租户、俱乐部租户、发布人、撤回原因、备注或版本号。
+
+俱乐部不存在、停用、服务范围不匹配、容量已满等错误继续使用 10.13 节已有订单市场错误码。
+
+## 12. 俱乐部履约 App API
+
+Controller 内部前缀为 `/delta/club-order`，UniApp 请求也只写 `/delta/club-order/**`；网关对外自动增加 `/app-api`。
+
+### 12.1 接口
+
+| 方法 | 完整 App URL | Query / Body | 说明 |
+|------|--------------|--------------|------|
+| GET | `/app-api/delta/club-order/page` | Query：`pageNo: Integer`、`pageSize: Integer` | 当前俱乐部已接挂牌履约分页 |
+| GET | `/app-api/delta/club-order/get` | Query：`listingId: Long` | 以挂牌 ID 查询安全履约详情 |
+| GET | `/app-api/delta/club-order/available-worker-page` | Query：`listingId: Long`、`pageNo: Integer`、`pageSize: Integer` | 数据库分页查询本俱乐部可分派打手 |
+| POST | `/app-api/delta/club-order/assign-worker` | Body：`listingId: Long`、`workerId: Long`、`remark: String(≤500，可空)` | 为已接挂牌分派本俱乐部打手 |
+
+App 请求不允许提交 `memberUserId`、`clubId`、`clubTenantId`、`sourceTenantId`、`tenantId` 或 `operatorId`。当前会员只取自服务端登录态，再通过 `owner_member_id` 解析启用的俱乐部。
+
+### 12.2 分页响应字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| listingId / serviceOrderId / assignedWorkerId | Long | 挂牌、履约订单、已分派打手 ID |
+| listingNo / serviceOrderNo | String | 挂牌编号、履约订单编号 |
+| serviceType / deviceType | Integer | 服务类型、设备类型 |
+| serviceTypeName / deviceTypeName | String | 服务类型、设备类型名称 |
+| serviceAmount | Integer | 服务金额，单位分 |
+| requirementSummary | String | 挂牌脱敏需求摘要 |
+| orderStatus / orderStatusName | Integer / String | 履约订单状态及名称 |
+| assignedWorkerDisplayName | String | 已分派打手展示名称 |
+| claimTime / acceptedAt / createTime | LocalDateTime | 接单、分派接受、订单创建时间 |
+
+详情在上述业务字段基础上返回 `productName: String`、`skuName: String`、`productPicUrl: String`、`count: Integer`、`customerRemark: String`、`assignedWorkerNo: String`、`assignedWorkerAvatar: String`、`startedAt/submittedAt/completedAt: LocalDateTime`。`customerRemark` 仅在挂牌所有权校验通过后返回。
+
+可分派打手响应字段：`id: Long`、`workerNo/displayName/avatar: String`、`level/score/workStatus/currentOrderCount/maxOrderCount: Integer`、`workStatusName: String`。
+
+禁止响应 `buyerUserId`、买家昵称/头像/手机、联系人手机、商城交易 ID/编号、来源或俱乐部租户 ID、后台备注、平台费用、打手金额；打手响应额外禁止 `userId`、真实姓名、手机号、抽成比例和审核备注。
+
+### 12.3 状态、跨租户与并发
+
+- 挂牌必须保持 `CLAIMED(1)`，并同时匹配当前俱乐部 ID 与俱乐部租户 ID。
+- 服务订单读取和写入使用挂牌保存的 `sourceTenantId`，并再次核对订单真实租户。
+- 打手读取、技能校验和状态 CAS 使用挂牌保存的 `claimedClubTenantId`，并再次核对打手真实租户。
+- 候选打手必须审核通过、启用、在线、技能匹配且全局没有有效履约订单；分页在数据库层完成。
+- 分派使用 `sourceTenantId + serviceOrderId` 分布式锁；独立事务核心在锁内重读挂牌、订单、打手并完成全部校验。
+- 成功后服务订单由 `PENDING_DISPATCH(10)` CAS 到 `ACCEPTED_PENDING_START(40)`，`dispatchMode=CLUB_ASSIGN(4)`，打手由 `ONLINE(1)` CAS 到 `BUSY(2)`。
+- 来源租户内创建 `CLUB_ASSIGN(5)` 且已接受的派单记录和订单日志；平台市场日志记录 `ASSIGN_WORKER`，挂牌状态仍为 `CLAIMED`。
+- 同一事务向打手写入 `CLUB_ORDER_WORKER_ASSIGNED` Outbox，租户为俱乐部租户，模板为 `ORDER_DISPATCHED`。任一 CAS、派单记录、日志或 Outbox 写入失败均整体回滚。
+
+### 12.4 错误码（1-020-027-xxx）
+
+| 错误码 | 常量 | App 提示 |
+|--------|------|----------|
+| 1_020_027_000 | CLUB_ORDER_LISTING_NOT_EXISTS | 已接挂牌不存在 |
+| 1_020_027_001 | CLUB_ORDER_NOT_BELONG_TO_CLUB | 无权访问该俱乐部挂牌 |
+| 1_020_027_002 | CLUB_ORDER_LISTING_STATUS_INVALID | 挂牌状态不允许此操作 |
+| 1_020_027_003 | CLUB_ORDER_SOURCE_TENANT_MISMATCH | 服务订单归属校验失败 |
+| 1_020_027_004 | CLUB_ORDER_SERVICE_ORDER_NOT_EXISTS | 挂牌关联的服务订单不存在 |
+| 1_020_027_005 | CLUB_ORDER_STATUS_NOT_ASSIGNABLE | 服务订单当前状态不可分派 |
+| 1_020_027_006 | CLUB_ORDER_ALREADY_ASSIGNED | 服务订单已指派打手 |
+| 1_020_027_007 | CLUB_ORDER_WORKER_NOT_EXISTS | 所选打手不存在 |
+| 1_020_027_008 | CLUB_ORDER_WORKER_TENANT_MISMATCH | 所选打手不属于当前俱乐部 |
+| 1_020_027_009 | CLUB_ORDER_WORKER_NOT_AVAILABLE | 所选打手当前不可接单 |
+| 1_020_027_010 | CLUB_ORDER_WORKER_SKILL_NOT_MATCH | 所选打手技能不匹配 |
+| 1_020_027_011 | CLUB_ORDER_WORKER_HAS_ACTIVE_ORDER | 所选打手已有进行中的订单 |
+| 1_020_027_012 | CLUB_ORDER_ASSIGN_BUSY | 订单正在分派中 |
+| 1_020_027_013 | CLUB_ORDER_ASSIGN_STATUS_CHANGED | 订单状态已变化 |
+
+俱乐部老板端仍不直接提供开始服务、进度、凭证和提交完成接口；被分派打手通过第 13 节既有打手订单接口执行履约。
+
+## 13. 打手订单跨租户履约 App API
+
+普通订单与俱乐部分派订单共用同一组 `/delta/worker-order` 接口。Controller 内不包含 `/app-api`，该前缀由网关统一添加；UniApp 请求路径仍写 `/delta/worker-order/**`。
+
+### 13.1 接口列表
+
+| 方法 | 完整 App URL | 请求字段 | 说明 |
+|------|--------------|----------|------|
+| GET | `/app-api/delta/worker-order/page` | `pageNo: Integer`、`pageSize: Integer`、`status: Integer(可选)` | 数据库分页查询当前打手的同租户和可信俱乐部订单 |
+| GET | `/app-api/delta/worker-order/get` | `id: Long` | 查询当前打手订单详情 |
+| POST | `/app-api/delta/worker-order/start` | Query：`serviceOrderId: Long` | 开始服务，状态 40→50 |
+| POST | `/app-api/delta/worker-order/progress` | `serviceOrderId: Long`、`progressType: Integer`、`content: String`、`progressPercent: Integer(可选)` | 提交进度；打手只能提交进度更新或异常报告 |
+| GET | `/app-api/delta/worker-order/progress-list` | `serviceOrderId: Long` | 查询来源租户中的进度 |
+| POST | `/app-api/delta/worker-order/evidence` | `serviceOrderId: Long`、`evidenceType: Integer`、`fileUrl: String`、`description: String(可选)` | 创建来源租户凭证 |
+| DELETE | `/app-api/delta/worker-order/evidence/delete` | Query：`id: Long` | 安全删除当前打手凭证 |
+| GET | `/app-api/delta/worker-order/evidence-list` | `serviceOrderId: Long` | 查询来源租户凭证 |
+| POST | `/app-api/delta/worker-order/submit-completion` | `serviceOrderId: Long`、`summary: String` | 提交完成，状态 50→60 |
+
+客户端不得提交 `sourceTenantId`、`tenantId`、`clubId`、`claimedClubTenantId`、`workerTenantId`、`operatorId`、`operatorType` 或 `dispatchMode`。登录会员只从 `getLoginUserId()` 获取，服务端在当前登录租户解析真实打手档案。
+
+### 13.2 统一访问上下文
+
+同租户订单必须满足 `order.tenantId == worker.tenantId` 且 `order.assignedWorkerId == worker.id`。
+
+跨租户俱乐部订单必须同时满足：
+
+1. 存在未删除且状态为 `CLAIMED(1)` 的平台挂牌；
+2. 挂牌 `serviceOrderId` 与请求订单一致，`sourceTenantId` 不为空；
+3. 挂牌 `claimedClubId` 对应打手租户内已启用俱乐部；
+4. `claimedClubTenantId == worker.tenantId`；
+5. 服务订单真实租户等于挂牌 `sourceTenantId`；
+6. 服务订单实际分派给当前打手，且 `dispatchMode=CLUB_ASSIGN(4)`；
+7. 来源租户存在状态为已接受、打手一致、类型为 `CLUB_ASSIGN(5)` 的有效派单记录。
+
+仅凭 `assignedWorkerId` 不能跨租户访问。分页采用数据库级查询，将当前租户订单与满足上述挂牌、派单条件的订单合并分页，`total` 与列表一致，不进行 Java 全量过滤或逐单查询。
+
+现有页面和详情响应契约保持不变，不增加来源租户、俱乐部租户、俱乐部内部 ID、买家用户 ID、联系方式、管理员备注、结算、退款或售后字段。
+
+### 13.3 履约状态和事务
+
+状态流转：
+
+```text
+40 ACCEPTED_PENDING_START → 50 IN_PROGRESS → 60 WORKER_SUBMITTED
+60 WORKER_SUBMITTED → 50 IN_PROGRESS（返工）
+60 WORKER_SUBMITTED → 80 COMPLETED（验收通过）
+```
+
+- 开始服务和提交完成均使用 `sourceTenantId + serviceOrderId` 分布式锁。
+- 锁内先切换到来源租户，再调用独立 `@Transactional(rollbackFor = Exception.class)` Core Service。
+- Core Service 事务内重新校验订单、挂牌、俱乐部、打手和派单记录。
+- 开始服务写入 `startedAt`、开始进度、订单日志和给买家的来源租户 Outbox。
+- 进度、凭证、订单日志全部写在服务订单来源租户。
+- 提交完成要求至少一条来源租户有效凭证，写入 `submittedAt`、100% 完成进度、订单日志和给买家的来源租户 Outbox。
+
+### 13.4 删除凭证安全规则
+
+删除接口继续只接收 `evidenceId`。服务端在忽略租户的只读上下文中取得凭证的 `serviceOrderId` 和真实 `tenantId`，随后根据订单重新执行完整打手履约上下文校验，并同时验证：
+
+```text
+evidence.tenantId == context.sourceTenantId
+evidence.serviceOrderId == context.order.id
+evidence.workerId == context.worker.id
+```
+
+只有订单仍为 `IN_PROGRESS(50)` 时，才在来源租户逻辑删除并写订单日志。全局定位到凭证不代表获得删除权限。
+
+### 13.5 验收、返工与结算
+
+- 俱乐部订单验收记录、进度、订单日志和结算记录继续写在来源租户。
+- 验收通过后跨租户检查该打手是否还有其他有效履约订单；没有时在俱乐部租户执行 `BUSY(2)→ONLINE(1)` CAS，有其他订单时保持 `BUSY`。
+- 返工后打手继续保持俱乐部租户中的 `BUSY`。
+- 返工和验收通知接收人为打手会员 ID，Outbox 写在俱乐部租户；普通订单仍写原租户。
+- 结算金额公式和结算所属租户不变。佣金比例优先使用订单快照；快照缺失时，俱乐部订单通过可信挂牌在俱乐部租户读取打手佣金比例。
+- 结算审核、驳回和打款通知在俱乐部订单场景同样通过可信挂牌解析打手，并写入俱乐部租户 Outbox。
+
+### 13.6 错误码（1-020-028-xxx）
+
+| 错误码 | 常量 | 说明 |
+|--------|------|------|
+| 1_020_028_000 | WORKER_ORDER_CROSS_TENANT_CONTEXT_NOT_FOUND | 未找到可信的跨租户履约上下文 |
+| 1_020_028_001 | WORKER_ORDER_CLUB_MISMATCH | 挂牌俱乐部归属校验失败 |
+| 1_020_028_002 | WORKER_ORDER_ASSIGNMENT_MISMATCH | 俱乐部派单记录校验失败 |
+| 1_020_028_003 | WORKER_ORDER_EVIDENCE_TENANT_MISMATCH | 凭证归属租户校验失败 |
+| 1_020_028_004 | WORKER_ORDER_EXECUTION_BUSY | 订单履约操作正在处理中 |
+| 1_020_028_005 | WORKER_ORDER_WORKER_STATUS_CHANGED | 打手工作状态已变化，验收事务回滚 |
+
+订单不存在、非当前打手、状态不允许、来源租户不一致和打手租户不一致继续复用已有 `SERVICE_ORDER_*` 与 `CLUB_ORDER_*` 错误码。
+
+### 13.7 当前未实现能力
+
+- 俱乐部老板改派打手
+- 俱乐部退回平台市场
+- 俱乐部主动撤销接单
+- 打手结算列表的完整跨租户查询
+- 退款和追回的俱乐部跨租户管理
+- UniApp 页面接入
+- Vue3 管理页面接入
+
+
+
